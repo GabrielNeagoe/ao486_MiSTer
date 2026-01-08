@@ -262,6 +262,10 @@ module execute(
     output      [31:0]  exe_result2,
     output      [31:0]  exe_result_push,
     output      [4:0]   exe_result_signals,
+    // x87 writeback sideband (Phase 1.1)
+    output reg          exe_fpu_wb_valid,
+    output reg  [2:0]   exe_fpu_wb_kind,
+    output reg  [15:0]  exe_fpu_wb_value,
     
     output      [3:0]   exe_arith_index,
     
@@ -303,6 +307,40 @@ wire [2:0]  exe_modregrm_reg;
 //------------------------------------------------------------------------------
 
 wire exe_waiting;
+wire exe_waiting_final;
+
+// -----------------------------------------------------------------------------
+// x87 coprocessor interface (Phase 1)
+// -----------------------------------------------------------------------------
+wire        fpu_busy;
+wire        fpu_done;
+wire        fpu_wb_valid;
+wire [2:0]  fpu_wb_kind;
+wire [15:0] fpu_wb_value;
+
+wire [15:0] fpu_mem_rdata;
+
+wire [31:0] exe_result_raw;
+
+wire        fpu_memstore_valid;
+wire [1:0]  fpu_memstore_size;
+wire [63:0] fpu_memstore_data64;
+
+wire [15:0] fpu_mem_wdata;
+wire        fpu_mem_write;
+
+// Start pulse for x87 execution (issued when CMD_fpu active and not stalled)
+reg         fpu_start;
+
+// Capture writeback sideband for write stage
+
+// Intercepts for execute_commands outputs (so we can mux results for FNSTCW)
+wire [31:0] exe_result_cmd;
+wire [31:0] exe_result2_cmd;
+wire [31:0] exe_result_push_cmd;
+wire [4:0]  exe_result_signals_cmd;
+assign exe_waiting_final = exe_waiting || (exe_cmd == `CMD_fpu && fpu_busy && ~fpu_done);
+assign fpu_mem_rdata = rd_extra_wire[15:0];
     
 wire exe_is_8bit_clear;
 
@@ -315,9 +353,9 @@ wire exe_eip_from_glob_param_2_16bit;
 
 //------------------------------------------------------------------------------
 
-assign exe_ready = ~(exe_reset) && ~(exe_waiting) && exe_cmd != `CMD_NULL && ~(wr_busy);
+assign exe_ready = ~(exe_reset) && ~(exe_waiting_final) && exe_cmd != `CMD_NULL && ~(wr_busy);
 
-assign exe_busy = exe_waiting || (exe_ready == `FALSE && exe_cmd != `CMD_NULL);
+assign exe_busy = exe_waiting_final || (exe_ready == `FALSE && exe_cmd != `CMD_NULL);
 
 assign e_load = rd_ready;
 
@@ -341,7 +379,12 @@ reg         exe_prefix_2byte;
 
 always @(posedge clk) begin if(rst_n == 1'b0) exe_decoder              <= 40'd0;     else if(e_load) exe_decoder              <= rd_decoder[39:0];        end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_eip                  <= 32'd0;     else if(e_load) exe_eip                  <= rd_eip;                  end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_operand_32bit        <= `FALSE;    else if(e_load) exe_operand_32bit        <= rd_operand_32bit;        end
+always @(posedge clk) begin if(rst_n == 1'b0) exe_operand_32bit        <= `FALSE;    else if(e_load) exe_operand_32bit        <= rd_operand_32bit;        
+        if (fpu_memstore_valid) begin
+            if (fpu_memstore_size == 2'd0) exe_operand_32bit <= 1'b0;
+            else                            exe_operand_32bit <= 1'b1;
+        end
+end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_address_32bit        <= `FALSE;    else if(e_load) exe_address_32bit        <= rd_address_32bit;        end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_prefix_group_1_rep   <= 2'd0;      else if(e_load) exe_prefix_group_1_rep   <= rd_prefix_group_1_rep;   end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_prefix_group_1_lock  <= `FALSE;    else if(e_load) exe_prefix_group_1_lock  <= rd_prefix_group_1_lock;  end
@@ -352,7 +395,9 @@ always @(posedge clk) begin if(rst_n == 1'b0) exe_cmdex                <= 4'd0; 
 always @(posedge clk) begin if(rst_n == 1'b0) exe_modregrm_imm         <= 8'd0;      else if(e_load) exe_modregrm_imm         <= rd_modregrm_imm[7:0];    end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_reg           <= `FALSE;    else if(e_load) exe_dst_is_reg           <= rd_dst_is_reg;           end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_rm            <= `FALSE;    else if(e_load) exe_dst_is_rm            <= rd_dst_is_rm;            end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_memory        <= `FALSE;    else if(e_load) exe_dst_is_memory        <= rd_dst_is_memory;        end
+always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_memory        <= `FALSE;    else if(e_load) exe_dst_is_memory        <= rd_dst_is_memory;        
+        if (fpu_memstore_valid) exe_dst_is_memory <= 1'b1;
+end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_eax           <= `FALSE;    else if(e_load) exe_dst_is_eax           <= rd_dst_is_eax;           end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_edx_eax       <= `FALSE;    else if(e_load) exe_dst_is_edx_eax       <= rd_dst_is_edx_eax;       end
 always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_implicit_reg  <= `FALSE;    else if(e_load) exe_dst_is_implicit_reg  <= rd_dst_is_implicit_reg;  end
@@ -812,10 +857,10 @@ execute_commands execute_commands_inst(
     
     .exe_error_code                     (exe_error_code),                   //output [15:0]
     
-    .exe_result                         (exe_result),                       //output [31:0]
-    .exe_result2                        (exe_result2),                      //output [31:0]
-    .exe_result_push                    (exe_result_push),                  //output [31:0]
-    .exe_result_signals                 (exe_result_signals),               //output [4:0]
+    .exe_result                         (exe_result_cmd),                       //output [31:0]
+    .exe_result2                        (exe_result2_cmd),                      //output [31:0]
+    .exe_result_push                    (exe_result_push_cmd),                  //output [31:0]
+    .exe_result_signals                 (exe_result_signals_cmd),               //output [4:0]
     
     .exe_arith_index                    (exe_arith_index),                  //output [3:0]
     
@@ -840,6 +885,38 @@ execute_commands execute_commands_inst(
     //branch
     .exe_branch                         (exe_branch),                       //output
     .exe_branch_eip                     (exe_branch_eip)                    //output [31:0]
+);// -----------------------------------------------------------------------------
+// x87 result muxing (Phase 1: FNSTCW drives memory store data through exe_result)
+// -----------------------------------------------------------------------------
+assign exe_result_raw    = (fpu_mem_write) ? {16'h0000, fpu_mem_wdata} : exe_result_cmd;
+assign exe_result2       = exe_result2_cmd;
+assign exe_result_push   = exe_result_push_cmd;
+assign exe_result_signals= exe_result_signals_cmd;
+// -----------------------------------------------------------------------------
+// x87 coprocessor (Phase 1)
+// -----------------------------------------------------------------------------
+x87_top u_x87 (
+    .clk            (clk),
+    .rst            (~rst_n),
+
+    .fpu_start      (fpu_start),
+    .fpu_op1        (exe_decoder[7:0]),
+    .fpu_op2        (exe_decoder[15:8]),
+    .fpu_op2_valid  (1'b1),
+
+    .mem_rdata32    ({16'd0, fpu_mem_rdata}),
+    .mem_rdata64    ({48'd0, fpu_mem_rdata}),
+
+    .fpu_busy       (fpu_busy),
+    .fpu_done       (fpu_done),
+
+    .fpu_wb_valid   (fpu_wb_valid),
+    .fpu_wb_kind    (fpu_wb_kind),
+    .fpu_wb_value   (fpu_wb_value),
+
+    .memstore_valid (fpu_memstore_valid),
+    .memstore_size  (fpu_memstore_size),
+    .memstore_data64(fpu_memstore_data64)
 );
 
 //------------------------------------------------------------------------------
@@ -850,4 +927,49 @@ wire _unused_ok = &{ 1'b0, cs_cache[63:56], cs_cache[54:52], cs_cache[47:16], rd
 
 //------------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// x87 control (Phase 1)
+//   - Issue one-cycle start pulse when CMD_fpu is active and execute is ready.
+//   - Latch writeback metadata so it is available to write stage.
+// -----------------------------------------------------------------------------
+always @(posedge clk) begin
+    if (rst_n == 1'b0) begin
+        fpu_start        <= 1'b0;
+        exe_fpu_wb_valid <= 1'b0;
+        exe_fpu_wb_kind  <= 3'd0;
+        exe_fpu_wb_value <= 16'h0000;
+    end
+    else begin
+        // default: no start pulse
+        fpu_start <= 1'b0;
+
+        // Clear latched writeback when a new non-FPU instruction loads
+        if (e_load && rd_cmd != `CMD_fpu) begin
+            exe_fpu_wb_valid <= 1'b0;
+            exe_fpu_wb_kind  <= 3'd0;
+            exe_fpu_wb_value <= 16'h0000;
+        end
+
+        // When FPU command is active and execute is not waiting, start the x87 unit.
+        if (exe_cmd == `CMD_fpu && exe_ready && ~exe_waiting) begin
+            fpu_start <= 1'b1;
+        end
+
+        // Latch writeback metadata when produced.
+        if (fpu_wb_valid) begin
+            exe_fpu_wb_valid <= 1'b1;
+            exe_fpu_wb_kind  <= fpu_wb_kind;
+            exe_fpu_wb_value <= fpu_wb_value;
+        end
+        else if (e_load) begin
+            // by default, retain until consumed by write stage (write stage latches on w_load)
+            exe_fpu_wb_valid <= exe_fpu_wb_valid;
+        end
+    end
+end
+
+//----------------------------------------------------------------------------
+// Phase 2B.2: x87 memory stores (currently 16/32-bit; 64-bit writes require pipeline widening)
+assign exe_result = (fpu_memstore_valid)? fpu_memstore_data64[31:0] : exe_result_raw;
+//----------------------------------------------------------------------------
 endmodule

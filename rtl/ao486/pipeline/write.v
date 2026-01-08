@@ -291,8 +291,14 @@ module write(
     input       [31:0]  dst_final,
     
     input               exe_mult_overflow,
-    input       [31:0]  exe_stack_offset   
-);
+    input       [31:0]  exe_stack_offset,
+
+    //x87 writeback (Phase 1.1)
+    input               exe_fpu_wb_valid,
+    input       [2:0]   exe_fpu_wb_kind,
+    input       [15:0]  exe_fpu_wb_value
+)
+;
 
 //------------------------------------------------------------------------------
 
@@ -426,6 +432,28 @@ wire [31:0] edi_to_reg;
 wire [31:0] ebp_to_reg;
 wire [31:0] esp_to_reg;
 wire        cr0_pe_to_reg;
+
+
+//--------------------------------------------------------------------------
+// x87 writeback (Phase 1.1):
+//  - Write stage uses explicit writeback metadata from execute stage, not opcode sniffing.
+//--------------------------------------------------------------------------
+reg        wr_fpu_wb_valid;
+reg [2:0]  wr_fpu_wb_kind;
+reg [15:0] wr_fpu_wb_value;
+
+localparam FPU_WB_NONE = 3'd0;
+localparam FPU_WB_AX   = 3'd1;
+
+wire fpu_wb_ax;
+assign fpu_wb_ax = wr_fpu_wb_valid && (wr_fpu_wb_kind == FPU_WB_AX);
+
+wire        write_eax_fpu;
+wire [31:0] eax_to_reg_fpu;
+
+assign write_eax_fpu  = write_eax || fpu_wb_ax;
+assign eax_to_reg_fpu = (fpu_wb_ax)? { eax[31:16], wr_fpu_wb_value } : eax_to_reg;
+
 wire        cr0_mp_to_reg;
 wire        cr0_em_to_reg;
 wire        cr0_ts_to_reg;
@@ -599,6 +627,9 @@ always @(posedge clk) begin if(rst_n == 1'b0) wr_prefix_group_1_lock  <= `FALSE;
 always @(posedge clk) begin if(rst_n == 1'b0) wr_consumed             <= 4'd0;      else if(w_load) wr_consumed             <= exe_consumed_final;       end
 always @(posedge clk) begin if(rst_n == 1'b0) wr_is_8bit              <= `FALSE;    else if(w_load) wr_is_8bit              <= exe_is_8bit_final;        end
 always @(posedge clk) begin if(rst_n == 1'b0) wr_cmdex                <= 4'd0;      else if(w_load) wr_cmdex                <= exe_cmdex;                end
+always @(posedge clk) begin if(rst_n == 1'b0) wr_fpu_wb_valid <= 1'b0; else if(w_load) wr_fpu_wb_valid <= exe_fpu_wb_valid; end
+always @(posedge clk) begin if(rst_n == 1'b0) wr_fpu_wb_kind  <= 3'd0;  else if(w_load) wr_fpu_wb_kind  <= exe_fpu_wb_kind;  end
+always @(posedge clk) begin if(rst_n == 1'b0) wr_fpu_wb_value <= 16'h0000; else if(w_load) wr_fpu_wb_value <= exe_fpu_wb_value; end
 always @(posedge clk) begin if(rst_n == 1'b0) wr_dst_is_reg           <= `FALSE;    else if(w_load) wr_dst_is_reg           <= exe_dst_is_reg;           end
 always @(posedge clk) begin if(rst_n == 1'b0) wr_dst_is_rm            <= `FALSE;    else if(w_load) wr_dst_is_rm            <= exe_dst_is_rm;            end
 always @(posedge clk) begin if(rst_n == 1'b0) wr_dst_is_memory        <= `FALSE;    else if(w_load) wr_dst_is_memory        <= exe_dst_is_memory;        end
@@ -1236,7 +1267,7 @@ write_register write_register_inst(
     .wr_debug_task_reg             (wr_debug_task_reg),             //input
                                    
     //write reg
-    .write_eax                     (write_eax),                     //input
+    .write_eax                     (write_eax_fpu),                     //input
     .write_regrm                   (write_regrm),                   //input
                                    
     //write reg options
@@ -1265,7 +1296,7 @@ write_register write_register_inst(
 
     //registers input
     
-    .eax_to_reg                    (eax_to_reg),                    //input [31:0]
+    .eax_to_reg                    (eax_to_reg_fpu),                    //input [31:0]
     .ebx_to_reg                    (ebx_to_reg),                    //input [31:0]
     .ecx_to_reg                    (ecx_to_reg),                    //input [31:0]
     .edx_to_reg                    (edx_to_reg),                    //input [31:0]

@@ -905,6 +905,9 @@ wire [31:0] dst_final;
 wire        exe_mult_overflow;
 wire [31:0] exe_stack_offset;
 
+wire        exe_fpu_wb_valid;
+wire [2:0]  exe_fpu_wb_kind;
+wire [15:0] exe_fpu_wb_value;
 execute execute_inst(
     .clk                (clk),
     .rst_n              (rst_n),
@@ -1143,8 +1146,14 @@ execute execute_inst(
     .src_final                     (src_final),                     //output [31:0]
     .dst_final                     (dst_final),                     //output [31:0]
     .exe_mult_overflow             (exe_mult_overflow),             //output
-    .exe_stack_offset              (exe_stack_offset)               //output [31:0]
+    .exe_stack_offset              (exe_stack_offset),              //output [31:0]
+
+    //x87 writeback (Phase 1.1)
+    .exe_fpu_wb_valid              (exe_fpu_wb_valid),              //output
+    .exe_fpu_wb_kind               (exe_fpu_wb_kind),               //output [2:0]
+    .exe_fpu_wb_value              (exe_fpu_wb_value)               //output [15:0]
 );
+
 
 //------------------------------------------------------------------------------
 
@@ -1405,8 +1414,14 @@ write write_inst(
     .src_final                     (src_final),                     //input [31:0]
     .dst_final                     (dst_final),                     //input [31:0]
     .exe_mult_overflow             (exe_mult_overflow),             //input
-    .exe_stack_offset              (exe_stack_offset)               //input [31:0]
+    .exe_stack_offset              (exe_stack_offset),              //input [31:0]
+
+    //x87 writeback (Phase 1.1)
+    .exe_fpu_wb_valid              (exe_fpu_wb_valid),              //input
+    .exe_fpu_wb_kind               (exe_fpu_wb_kind),               //input [2:0]
+    .exe_fpu_wb_value              (exe_fpu_wb_value)               //input [15:0]
 );
+
 
 
 //------------------------------------------------------------------------------
