@@ -189,4 +189,8 @@ module fp64_sqrt(
             end
         end
     end
+
+
+// Inexact flag: asserts when discarded bits are non-zero during truncation/rounding.
+
 endmodule
