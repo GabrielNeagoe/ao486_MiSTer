@@ -26,7 +26,9 @@
 
 `include "defines.v"
 
-module execute(
+//PARSED_COMMENTS: this file contains parsed script comments
+
+module execute_commands(
     input               clk,
     input               rst_n,
     
@@ -39,9 +41,7 @@ module execute(
     input       [31:0]  ebp,
     input       [31:0]  esp,
     
-    input       [63:0]  cs_cache,
-    input       [63:0]  tr_cache,
-    input       [63:0]  ss_cache,
+    input       [31:0]  tr_base,
     
     input       [15:0]  es,
     input       [15:0]  cs,
@@ -99,6 +99,11 @@ module execute(
     input               cr0_mp,
     input               cr0_pe,
     
+    input       [31:0]  cs_limit,
+    input       [31:0]  tr_limit,
+    input       [63:0]  tr_cache,
+    input       [63:0]  ss_cache,
+    
     input       [15:0]  idtr_limit,
     input       [31:0]  idtr_base,
     
@@ -112,6 +117,51 @@ module execute(
     input               exc_soft_int,
     input       [7:0]   exc_vector,
     
+    //exe input
+    input       [10:0]  exe_mutex_current,
+    
+    input       [31:0]  exe_eip,
+    input       [31:0]  e_eip_next_sum,
+    input       [31:0]  exe_extra,
+    input       [31:0]  exe_linear,
+    input       [6:0]   exe_cmd,
+    input       [3:0]   exe_cmdex,
+    input       [39:0]  exe_decoder,
+    input       [2:0]   exe_modregrm_reg,
+    input       [31:0]  exe_address_effective,
+    input               exe_is_8bit,
+    input               exe_operand_16bit,
+    input               exe_operand_32bit,
+    input               exe_address_16bit,
+    input       [3:0]   exe_consumed,
+    
+    input       [31:0]  src,
+    input       [31:0]  dst,
+    
+    input       [31:0]  exe_enter_offset,
+    
+    input               exe_ready,
+    
+    //mult
+    input               mult_busy,
+    input       [65:0]  mult_result,
+    
+    //div
+    input               div_busy,
+    input               exe_div_exception,
+    
+    input       [31:0]  div_result_quotient,
+    input       [31:0]  div_result_remainder,
+    
+    //shift
+    input               e_shift_no_write,
+    input               e_shift_oszapc_update,
+    input               e_shift_cf_of_update,
+    input               e_shift_oflag,
+    input               e_shift_cflag,
+    
+    input       [31:0]  e_shift_result,
+    
     //tlbcheck
     output              tlbcheck_do,
     input               tlbcheck_done,
@@ -119,12 +169,14 @@ module execute(
     
     output      [31:0]  tlbcheck_address,
     output              tlbcheck_rw,
+    //----
     
     //tlbflushsingle
     output              tlbflushsingle_do,
     input               tlbflushsingle_done,
     
     output      [31:0]  tlbflushsingle_address,
+    //----
     
     //invd
     output              invdcode_do,
@@ -135,15 +187,11 @@ module execute(
     
     output              wbinvddata_do,
     input               wbinvddata_done,
+    //---
     
     //pipeline input
+    input       [1:0]   wr_task_rpl,
     input       [31:0]  wr_esp_prev,
-    input       [31:0]  wr_stack_offset,
-    
-    input       [10:0]  wr_mutex,
-    
-    //pipeline output
-    output              exe_is_front,
     
     //global input
     input       [63:0]  glob_descriptor,
@@ -151,10 +199,7 @@ module execute(
     input       [31:0]  glob_param_1,
     input       [31:0]  glob_param_2,
     input       [31:0]  glob_param_3,
-    input       [31:0]  glob_param_4,
     input       [31:0]  glob_param_5,
-    
-    input       [1:0]   wr_task_rpl,
     
     input       [31:0]  glob_desc_base,
     
@@ -179,13 +224,33 @@ module execute(
     
     output              dr6_bd_set,
     
-    //to microcode
-    output      [31:0]  task_eip,
-    //to wr
-    output      [31:0]  exe_buffer,
-    output      [463:0] exe_buffer_shifted,
+    //offset control
+    output              offset_ret_far_se,
+    output              offset_new_stack,
+    output              offset_new_stack_minus,
+    output              offset_new_stack_continue,
+    output              offset_leave,
+    output              offset_pop,
+    output              offset_enter_last,
+    output              offset_ret,
+    output              offset_iret_glob_param_4,
+    output              offset_iret,
+    output              offset_ret_imm,
+    output              offset_esp,
+    output              offset_call,
+    output              offset_call_keep,
+    output              offset_call_int_same_first,
+    output              offset_call_int_same_next,
+    output              offset_int_real,
+    output              offset_int_real_next,
+    output              offset_task,
     
-    //exceptions
+    //task output
+    output      [31:0]  task_eip,
+
+    //exe output
+    output              exe_waiting,
+    
     output              exe_bound_fault,
     output              exe_trigger_gp_fault,
     output              exe_trigger_ts_fault,
@@ -197,75 +262,13 @@ module execute(
     output              exe_load_seg_gp_fault,
     output              exe_load_seg_ss_fault,
     output              exe_load_seg_np_fault,
-    output              exe_div_exception,
     
     output      [15:0]  exe_error_code,
-    
-    output reg  [31:0]  exe_eip,
-    output reg  [3:0]   exe_consumed,
-    
-    //rd pipeline
-    output              exe_busy,
-    input               rd_ready,
-    
-    input       [87:0]  rd_decoder,
-    input       [31:0]  rd_eip,
-    input               rd_operand_32bit,
-    input               rd_address_32bit,
-    input       [1:0]   rd_prefix_group_1_rep,
-    input               rd_prefix_group_1_lock,
-    input               rd_prefix_2byte,
-    input       [3:0]   rd_consumed,
-    input               rd_is_8bit,
-    input       [6:0]   rd_cmd,
-    input       [3:0]   rd_cmdex,
-    input       [31:0]  rd_modregrm_imm,
-    input       [10:0]  rd_mutex_next,
-    input               rd_dst_is_reg,
-    input               rd_dst_is_rm,
-    input               rd_dst_is_memory,
-    input               rd_dst_is_eax,
-    input               rd_dst_is_edx_eax,
-    input               rd_dst_is_implicit_reg,
-    input       [31:0]  rd_extra_wire,
-    input       [31:0]  rd_linear,
-    input       [3:0]   rd_debug_read,
-    input       [31:0]  src_wire,
-    input       [31:0]  dst_wire,
-    input       [31:0]  rd_address_effective,
-    
-    //exe pipeline
-    input               wr_busy,
-    output              exe_ready,
-    
-    output reg  [39:0]  exe_decoder,
-    output      [31:0]  exe_eip_final,
-    output reg          exe_operand_32bit,
-    output reg          exe_address_32bit,
-    output reg  [1:0]   exe_prefix_group_1_rep,
-    output reg          exe_prefix_group_1_lock,
-    output      [3:0]   exe_consumed_final,
-    output              exe_is_8bit_final,
-    output reg  [6:0]   exe_cmd,
-    output reg  [3:0]   exe_cmdex,
-    output reg  [10:0]  exe_mutex,
-    output reg          exe_dst_is_reg,
-    output reg          exe_dst_is_rm,
-    output reg          exe_dst_is_memory,
-    output reg          exe_dst_is_eax,
-    output reg          exe_dst_is_edx_eax,
-    output reg          exe_dst_is_implicit_reg,
-    output reg  [31:0]  exe_linear,
-    output reg  [3:0]   exe_debug_read,
     
     output      [31:0]  exe_result,
     output      [31:0]  exe_result2,
     output      [31:0]  exe_result_push,
     output      [4:0]   exe_result_signals,
-    // x87 writeback sideband (Phase 1.1)
-    output reg          exe_fpu_wb_valid,
-    output reg  [2:0]   exe_fpu_wb_kind,
-    output reg  [15:0]  exe_fpu_wb_value,
     
     output      [3:0]   exe_arith_index,
     
@@ -274,730 +277,143 @@ module execute(
     output              exe_arith_adc_carry,
     output              exe_arith_sbb_carry,
     
-    output      [31:0]  src_final,
-    output      [31:0]  dst_final,
-    
-    output              exe_mult_overflow,
-    output      [31:0]  exe_stack_offset
-);
-
-//------------------------------------------------------------------------------
-
-wire [31:0] tr_base;
-wire [31:0] tr_limit;
-
-wire [31:0] cs_limit;
-
-assign tr_base  = { tr_cache[63:56], tr_cache[39:16] };
-
-assign tr_limit = tr_cache[`DESC_BIT_G]? { tr_cache[51:48], tr_cache[15:0], 12'hFFF } : { 12'd0, tr_cache[51:48], tr_cache[15:0] };
-assign cs_limit = cs_cache[`DESC_BIT_G]? { cs_cache[51:48], cs_cache[15:0], 12'hFFF } : { 12'd0, cs_cache[51:48], cs_cache[15:0] };
-
-//------------------------------------------------------------------------------
-
-wire        e_load;
-
-wire        exe_operand_16bit;
-wire        exe_address_16bit;
-
-wire [10:0] exe_mutex_current;
-
-wire [2:0]  exe_modregrm_reg;
-
-//------------------------------------------------------------------------------
-
-wire exe_waiting;
-wire exe_waiting_final;
-
-// -----------------------------------------------------------------------------
-// x87 coprocessor interface (Phase 1)
-// -----------------------------------------------------------------------------
-wire        fpu_busy;
-wire        fpu_done;
-wire        fpu_wb_valid;
-wire [2:0]  fpu_wb_kind;
-wire [15:0] fpu_wb_value;
-
-wire [15:0] fpu_mem_rdata;
-wire [31:0] fpu_mem_rdata32;
-reg  [31:0] fpu_load64_lo;
-wire [63:0] fpu_mem_rdata64;
-
-wire [31:0] exe_result_raw;
-
-wire        fpu_memstore_valid;
-wire [1:0]  fpu_memstore_size;
-wire [63:0] fpu_memstore_data64;
-
-wire [15:0] fpu_mem_wdata;
-wire        fpu_mem_write;
-
-// Start pulse for x87 execution (issued when CMD_fpu active and not stalled)
-reg         fpu_start;
-
-// Capture writeback sideband for write stage
-
-// Intercepts for execute_commands outputs (so we can mux results for FNSTCW)
-wire [31:0] exe_result_cmd;
-wire [31:0] exe_result2_cmd;
-wire [31:0] exe_result_push_cmd;
-wire [4:0]  exe_result_signals_cmd;
-assign exe_waiting_final = exe_waiting || (exe_cmd == `CMD_fpu && fpu_busy && ~fpu_done);
-assign fpu_mem_rdata = rd_extra_wire[15:0];
-assign fpu_mem_rdata32 = rd_extra_wire;
-
-// Assemble 64-bit load operand across two micro-ops (cmdex toggles).
-// Convention: cmdex[0]==0 -> low dword, cmdex[0]==1 -> high dword.
-assign fpu_mem_rdata64 = { fpu_mem_rdata32, fpu_load64_lo };
-    
-wire exe_is_8bit_clear;
-
-wire exe_cmpxchg_switch;
-
-wire exe_task_switch_finished;
-    
-wire exe_eip_from_glob_param_2;
-wire exe_eip_from_glob_param_2_16bit;
-
-//------------------------------------------------------------------------------
-
-assign exe_ready = ~(exe_reset) && ~(exe_waiting_final) && exe_cmd != `CMD_NULL && ~(wr_busy);
-
-assign exe_busy = exe_waiting_final || (exe_ready == `FALSE && exe_cmd != `CMD_NULL);
-
-assign e_load = rd_ready;
-
-//------------------------------------------------------------------------------
-
-wire [31:0] rd_eip_next_sum;
-reg  [31:0] exe_eip_next_sum;
-    
-assign rd_eip_next_sum =
-    (rd_is_8bit)?          rd_eip + { {24{rd_decoder[15]}}, rd_decoder[15:8] } :
-    (~rd_operand_32bit)?   rd_eip + { {16{rd_decoder[23]}}, rd_decoder[23:8] } :
-                           rd_eip + rd_decoder[39:8];
-
-reg         exe_is_8bit;
-reg [7:0]   exe_modregrm_imm;
-reg [31:0]  exe_extra;
-reg [31:0]  src;
-reg [31:0]  dst;
-reg [31:0]  exe_address_effective;
-reg         exe_prefix_2byte;
-
-always @(posedge clk) begin if(rst_n == 1'b0) exe_decoder              <= 40'd0;     else if(e_load) exe_decoder              <= rd_decoder[39:0];        end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_eip                  <= 32'd0;     else if(e_load) exe_eip                  <= rd_eip;                  end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_operand_32bit        <= `FALSE;    else if(e_load) exe_operand_32bit        <= rd_operand_32bit;        
-        if (fpu_memstore_valid) begin
-            if (fpu_memstore_size == 2'd0) exe_operand_32bit <= 1'b0;
-            else                            exe_operand_32bit <= 1'b1;
-        end
-end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_address_32bit        <= `FALSE;    else if(e_load) exe_address_32bit        <= rd_address_32bit;        end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_prefix_group_1_rep   <= 2'd0;      else if(e_load) exe_prefix_group_1_rep   <= rd_prefix_group_1_rep;   end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_prefix_group_1_lock  <= `FALSE;    else if(e_load) exe_prefix_group_1_lock  <= rd_prefix_group_1_lock;  end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_prefix_2byte         <= `FALSE;    else if(e_load) exe_prefix_2byte         <= rd_prefix_2byte;         end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_consumed             <= 4'd0;      else if(e_load) exe_consumed             <= rd_consumed;             end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_is_8bit              <= `FALSE;    else if(e_load) exe_is_8bit              <= rd_is_8bit;              end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_cmdex                <= 4'd0;      else if(e_load) exe_cmdex                <= rd_cmdex;                end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_modregrm_imm         <= 8'd0;      else if(e_load) exe_modregrm_imm         <= rd_modregrm_imm[7:0];    end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_reg           <= `FALSE;    else if(e_load) exe_dst_is_reg           <= rd_dst_is_reg;           end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_rm            <= `FALSE;    else if(e_load) exe_dst_is_rm            <= rd_dst_is_rm;            end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_memory        <= `FALSE;    else if(e_load) exe_dst_is_memory        <= rd_dst_is_memory;        
-        if (fpu_memstore_valid) exe_dst_is_memory <= 1'b1;
-end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_eax           <= `FALSE;    else if(e_load) exe_dst_is_eax           <= rd_dst_is_eax;           end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_edx_eax       <= `FALSE;    else if(e_load) exe_dst_is_edx_eax       <= rd_dst_is_edx_eax;       end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_dst_is_implicit_reg  <= `FALSE;    else if(e_load) exe_dst_is_implicit_reg  <= rd_dst_is_implicit_reg;  end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_extra                <= 32'd0;     else if(e_load) exe_extra                <= rd_extra_wire;           end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_linear               <= 32'd0;     else if(e_load) exe_linear               <= rd_linear;               end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_debug_read           <= 4'd0;      else if(e_load) exe_debug_read           <= rd_debug_read;           end
-always @(posedge clk) begin if(rst_n == 1'b0) src                      <= 32'd0;     else if(e_load) src                      <= src_wire;                end
-always @(posedge clk) begin if(rst_n == 1'b0) dst                      <= 32'd0;     else if(e_load) dst                      <= dst_wire;                end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_address_effective    <= 32'd0;     else if(e_load) exe_address_effective    <= rd_address_effective;    end
-always @(posedge clk) begin if(rst_n == 1'b0) exe_eip_next_sum         <= 32'd0;     else if(e_load) exe_eip_next_sum         <= rd_eip_next_sum;         end
-
-always @(posedge clk) begin
-    if(rst_n == 1'b0)   exe_mutex <= 11'd0;
-    else if(exe_reset)  exe_mutex <= 11'd0;
-    else if(e_load)     exe_mutex <= rd_mutex_next;
-    else if(exe_ready)  exe_mutex <= 11'd0;
-end
-
-always @(posedge clk) begin
-    if(rst_n == 1'b0)   exe_cmd <= `CMD_NULL;
-    else if(exe_reset)  exe_cmd <= `CMD_NULL;
-    else if(e_load)     exe_cmd <= rd_cmd;
-    else if(exe_ready)  exe_cmd <= `CMD_NULL;
-end
-
-//------------------------------------------------------------------------------
-
-assign exe_operand_16bit = ~(exe_operand_32bit);
-assign exe_address_16bit = ~(exe_address_32bit);
-
-assign exe_mutex_current      = wr_mutex;
-
-assign exe_modregrm_reg = exe_decoder[13:11];
-
-//------------------------------------------------------------------------------ misc
-
-assign exe_is_8bit_final = (exe_is_8bit_clear)? `FALSE : exe_is_8bit;
-
-assign exe_is_front = exe_cmd != `CMD_NULL && ~(exe_mutex_current[`MUTEX_ACTIVE_BIT]);
-
-assign dst_final     = (exe_cmpxchg_switch)? eax : dst;
-assign src_final     = (exe_cmpxchg_switch)? dst : src;
-
-assign exe_consumed_final = (exe_task_switch_finished)?   glob_param_3[21:18] : exe_consumed;
-
-//------------------------------------------------------------------------------ eip
-
-wire        exe_branch;
-wire [31:0] exe_branch_eip;
-
-assign exe_eip_final =
-    (exe_eip_from_glob_param_2 && ~(exe_task_switch_finished))? glob_param_2 :
-    (exe_eip_from_glob_param_2_16bit)?                          { 16'd0, glob_param_2[15:0] } :
-    (exe_branch)?                                               exe_branch_eip :
-                                                                exe_eip;
-
-//------------------------------------------------------------------------------
-
-wire offset_ret_far_se;
-wire offset_new_stack;
-wire offset_new_stack_minus;
-wire offset_new_stack_continue;
-wire offset_leave;
-wire offset_pop;
-wire offset_enter_last;
-wire offset_ret;
-wire offset_iret_glob_param_4;
-wire offset_iret;
-wire offset_ret_imm;
-wire offset_esp;
-wire offset_call;
-wire offset_call_keep;
-wire offset_call_int_same_first;
-wire offset_call_int_same_next;
-wire offset_int_real;
-wire offset_int_real_next;
-wire offset_task;
-
-wire [31:0] exe_enter_offset;
-
-execute_offset execute_offset_inst(
-    
-    .exe_operand_16bit          (exe_operand_16bit),        //input
-    .exe_decoder                (exe_decoder),              //input [39:0]
-    
-    .ebp                        (ebp),                      //input [31:0]
-    .esp                        (esp),                      //input [31:0]
-    .ss_cache                   (ss_cache),                 //input [63:0]
-    
-    .glob_descriptor            (glob_descriptor),          //input [63:0]
-    
-    .glob_param_1               (glob_param_1),             //input [31:0]
-    .glob_param_3               (glob_param_3),             //input [31:0]
-    .glob_param_4               (glob_param_4),             //input [31:0]
-    
-    .exe_address_effective      (exe_address_effective),    //input [31:0]
-    
-    .wr_stack_offset            (wr_stack_offset),          //input [31:0]
-    
-    //offset control
-    .offset_ret_far_se          (offset_ret_far_se),          //input
-    .offset_new_stack           (offset_new_stack),           //input
-    .offset_new_stack_minus     (offset_new_stack_minus),     //input
-    .offset_new_stack_continue  (offset_new_stack_continue),  //input
-    .offset_leave               (offset_leave),               //input
-    .offset_pop                 (offset_pop),                 //input
-    .offset_enter_last          (offset_enter_last),          //input
-    .offset_ret                 (offset_ret),                 //input
-    .offset_iret_glob_param_4   (offset_iret_glob_param_4),   //input
-    .offset_iret                (offset_iret),                //input
-    .offset_ret_imm             (offset_ret_imm),             //input
-    .offset_esp                 (offset_esp),                 //input
-    .offset_call                (offset_call),                //input
-    .offset_call_keep           (offset_call_keep),           //input
-    .offset_call_int_same_first (offset_call_int_same_first), //input
-    .offset_call_int_same_next  (offset_call_int_same_next),  //input
-    .offset_int_real            (offset_int_real),            //input
-    .offset_int_real_next       (offset_int_real_next),       //input
-    .offset_task                (offset_task),                //input
-    
-    //output
-    .exe_stack_offset           (exe_stack_offset),           //output [31:0]
-    
-    .exe_enter_offset           (exe_enter_offset)            //output [31:0]
-);
-
-//------------------------------------------------------------------------------
-
-wire e_shift_no_write;
-wire e_shift_oszapc_update;
-wire e_shift_cf_of_update;
-wire e_shift_oflag;
-wire e_shift_cflag;
-
-wire [31:0] e_shift_result;
-
-execute_shift execute_shift_inst(
-    
-    .exe_is_8bit            (exe_is_8bit),              //input
-    .exe_operand_16bit      (exe_operand_16bit),        //input
-    .exe_operand_32bit      (exe_operand_32bit),        //input
-    .exe_prefix_2byte       (exe_prefix_2byte),         //input
-    
-    .exe_cmd                (exe_cmd),                  //input [6:0]
-    .exe_cmdex              (exe_cmdex),                //input [3:0]
-    .exe_decoder            (exe_decoder),              //input [39:0]
-    .exe_modregrm_imm       (exe_modregrm_imm),         //input [7:0]
-    
-    .cflag                  (cflag),                    //input
-    
-    .ecx                    (ecx),                      //input [31:0]
-    
-    .dst                    (dst),                      //input [31:0]
-    .src                    (src),                      //input [31:0]
-    
-    //output
-    .e_shift_no_write       (e_shift_no_write),         //output
-    .e_shift_oszapc_update  (e_shift_oszapc_update),    //output
-    .e_shift_cf_of_update   (e_shift_cf_of_update),     //output
-    .e_shift_oflag          (e_shift_oflag),            //output
-    .e_shift_cflag          (e_shift_cflag),            //output
-    
-    .e_shift_result         (e_shift_result)            //output [31:0]
-);
-
-//------------------------------------------------------------------------------
-
-wire [65:0] mult_result;
-wire        mult_busy;    
-
-execute_multiply execute_multiply_inst(
-    .clk                    (clk),
-    .rst_n                  (rst_n),
-    
-    .exe_reset              (exe_reset),
-    
-    .exe_cmd                (exe_cmd),            //input [6:0]
-    .exe_is_8bit            (exe_is_8bit),        //input
-    .exe_operand_16bit      (exe_operand_16bit),  //input
-    .exe_operand_32bit      (exe_operand_32bit),  //input
-    
-    .src                    (src),                //input [31:0]
-    .dst                    (dst),                //input [31:0]
-    
-    //output
-    .mult_result            (mult_result),        //output [65:0]
-    .mult_busy              (mult_busy),          //output
-    
-    .exe_mult_overflow      (exe_mult_overflow)   //output
-);
-
-//------------------------------------------------------------------------------
-wire        div_busy;
-
-wire [31:0] div_result_quotient;
-wire [31:0] div_result_remainder;
-
-execute_divide execute_divide_inst(
-    .clk                    (clk),
-    .rst_n                  (rst_n),
-    
-    .exe_reset              (exe_reset),
-    .exe_ready              (exe_ready),
-    
-    .exe_is_8bit            (exe_is_8bit),          //input
-    .exe_operand_16bit      (exe_operand_16bit),    //input
-    .exe_operand_32bit      (exe_operand_32bit),    //input
-    .exe_cmd                (exe_cmd),              //input [6:0]
-    
-    .eax                    (eax),                  //input [31:0]
-    .edx                    (edx),                  //input [31:0]
-    
-    .src                    (src),                  //input [31:0]
-    
-    //output
-    .div_busy               (div_busy),             //output
-    
-    .exe_div_exception      (exe_div_exception),    //output
-    
-    .div_result_quotient    (div_result_quotient),  //output [31:0]
-    .div_result_remainder   (div_result_remainder)  //output [31:0]
-);
-
-//------------------------------------------------------------------------------
-
-execute_commands execute_commands_inst(
-    .clk                (clk),
-    .rst_n              (rst_n),
-    
-    .exe_reset          (exe_reset),
-    
-    //general input
-    .eax                (eax),              //input [31:0]
-    .ecx                (ecx),              //input [31:0]
-    .edx                (edx),              //input [31:0]
-    .ebp                (ebp),              //input [31:0]
-    .esp                (esp),              //input [31:0]
-    
-    .tr_base            (tr_base),          //input [31:0]
-    
-    .es                 (es),               //input [15:0]
-    .cs                 (cs),               //input [15:0]
-    .ss                 (ss),               //input [15:0]
-    .ds                 (ds),               //input [15:0]
-    .fs                 (fs),               //input [15:0]
-    .gs                 (gs),               //input [15:0]
-    .ldtr               (ldtr),             //input [15:0]
-    .tr                 (tr),               //input [15:0]
-    
-    .cr2                (cr2),              //input [31:0]
-    .cr3                (cr3),              //input [31:0]
-    
-    .dr0                (dr0),              //input [31:0]
-    .dr1                (dr1),              //input [31:0]
-    .dr2                (dr2),              //input [31:0]
-    .dr3                (dr3),              //input [31:0]
-    .dr6_bt             (dr6_bt),           //input
-    .dr6_bs             (dr6_bs),           //input
-    .dr6_bd             (dr6_bd),           //input
-    .dr6_b12            (dr6_b12),          //input
-    .dr6_breakpoints    (dr6_breakpoints),    //input [3:0]
-    .dr7                (dr7),                //input [31:0]
-    
-    .cpl                (cpl),                //input [1:0]
-    
-    .real_mode          (real_mode),          //input
-    .v8086_mode         (v8086_mode),         //input
-    .protected_mode     (protected_mode),     //input
-    
-    .idflag                             (idflag),                           //input
-    .acflag                             (acflag),                           //input
-    .vmflag                             (vmflag),                           //input
-    .rflag                              (rflag),                            //input
-    .ntflag                             (ntflag),                           //input
-    .iopl                               (iopl),                             //input [1:0]
-    .oflag                              (oflag),                            //input
-    .dflag                              (dflag),                            //input
-    .iflag                              (iflag),                            //input
-    .tflag                              (tflag),                            //input
-    .sflag                              (sflag),                            //input
-    .zflag                              (zflag),                            //input
-    .aflag                              (aflag),                            //input
-    .pflag                              (pflag),                            //input
-    .cflag                              (cflag),                            //input
-    
-    .cr0_pg                             (cr0_pg),                           //input
-    .cr0_cd                             (cr0_cd),                           //input
-    .cr0_nw                             (cr0_nw),                           //input
-    .cr0_am                             (cr0_am),                           //input
-    .cr0_wp                             (cr0_wp),                           //input
-    .cr0_ne                             (cr0_ne),                           //input
-    .cr0_ts                             (cr0_ts),                           //input
-    .cr0_em                             (cr0_em),                           //input
-    .cr0_mp                             (cr0_mp),                           //input
-    .cr0_pe                             (cr0_pe),                           //input
-    
-    .cs_limit                           (cs_limit),                         //input [31:0]
-    .tr_limit                           (tr_limit),                         //input [31:0]
-    .tr_cache                           (tr_cache),                         //input [63:0]
-    .ss_cache                           (ss_cache),                         //input [63:0]
-   
-    .idtr_limit                         (idtr_limit),                       //input [15:0]
-    .idtr_base                          (idtr_base),                        //input [15:0]
-    
-    .gdtr_limit                         (gdtr_limit),                       //input [15:0]
-    .gdtr_base                          (gdtr_base),                        //input [31:0]
-    
-    //exception input
-    .exc_push_error                     (exc_push_error),                   //input
-    .exc_error_code                     (exc_error_code),                   //input [15:0]
-    .exc_soft_int_ib                    (exc_soft_int_ib),                  //input
-    .exc_soft_int                       (exc_soft_int),                     //input
-    .exc_vector                         (exc_vector),                       //input [7:0]
-    
-    //exe input
-    .exe_mutex_current                  (exe_mutex_current),                //input [10:0]
-    
-    .exe_eip                            (exe_eip),                          //input [31:0]
-    .e_eip_next_sum                     (exe_eip_next_sum),                 //input [31:0]
-    .exe_extra                          (exe_extra),                        //input [31:0]
-    .exe_linear                         (exe_linear),                       //input [31:0]
-    .exe_cmd                            (exe_cmd),                          //input [6:0]
-    .exe_cmdex                          (exe_cmdex),                        //input [3:0]
-    .exe_decoder                        (exe_decoder),                      //input [39:0]
-    .exe_modregrm_reg                   (exe_modregrm_reg),                 //input [2:0]
-    .exe_address_effective              (exe_address_effective),            //input [31:0]
-    .exe_is_8bit                        (exe_is_8bit),                      //input
-    .exe_operand_16bit                  (exe_operand_16bit),                //input
-    .exe_operand_32bit                  (exe_operand_32bit),                //input
-    .exe_address_16bit                  (exe_address_16bit),                //input
-    .exe_consumed                       (exe_consumed),                     //input [3:0]
-    
-    .src                                (src),                              //input [31:0]
-    .dst                                (dst),                              //input [31:0]
-    
-    .exe_enter_offset                   (exe_enter_offset),                 //input [31:0]
-    
-    .exe_ready                          (exe_ready),                        //input
-    
-    //mult
-    .mult_busy                          (mult_busy),                        //input
-    .mult_result                        (mult_result),                      //input [31:0]
-    
-    //div
-    .div_busy                           (div_busy),                         //input
-    .exe_div_exception                  (exe_div_exception),                //input
-    
-    .div_result_quotient                (div_result_quotient),              //input [31:0]
-    .div_result_remainder               (div_result_remainder),             //input [31:0]
-    
-    //shift
-    .e_shift_no_write                   (e_shift_no_write),                 //input
-    .e_shift_oszapc_update              (e_shift_oszapc_update),            //input
-    .e_shift_cf_of_update               (e_shift_cf_of_update),             //input
-    .e_shift_oflag                      (e_shift_oflag),                    //input
-    .e_shift_cflag                      (e_shift_cflag),                    //input
-    
-    .e_shift_result                     (e_shift_result),                   //input [31:0]
-    
-    //tlbcheck
-    .tlbcheck_do                        (tlbcheck_do),                      //output
-    .tlbcheck_done                      (tlbcheck_done),                    //input
-    .tlbcheck_page_fault                (tlbcheck_page_fault),              //input
-    
-    .tlbcheck_address                   (tlbcheck_address),                 //output [31:0]
-    .tlbcheck_rw                        (tlbcheck_rw),                      //output
-    
-    //tlbflushsingle
-    .tlbflushsingle_do                  (tlbflushsingle_do),                //output
-    .tlbflushsingle_done                (tlbflushsingle_done),              //input
-    
-    .tlbflushsingle_address             (tlbflushsingle_address),           //output [31:0]
-    
-    //invd
-    .invdcode_do                        (invdcode_do),                      //output
-    .invdcode_done                      (invdcode_done),                    //input
-    
-    .invddata_do                        (invddata_do),                      //output
-    .invddata_done                      (invddata_done),                    //input
-    
-    .wbinvddata_do                      (wbinvddata_do),                    //output
-    .wbinvddata_done                    (wbinvddata_done),                  //input
-    
-    //pipeline input
-    .wr_task_rpl                        (wr_task_rpl),                      //input [1:0]
-    .wr_esp_prev                        (wr_esp_prev),                      //input [31:0]
-    
-    //global input
-    .glob_descriptor                    (glob_descriptor),                  //input [63:0]
-    .glob_descriptor_2                  (glob_descriptor_2),                //input [63:0]
-    .glob_param_1                       (glob_param_1),                     //input [31:0]
-    .glob_param_2                       (glob_param_2),                     //input [31:0]
-    .glob_param_3                       (glob_param_3),                     //input [31:0]
-    .glob_param_5                       (glob_param_5),                     //input [31:0]
-    
-    .glob_desc_base                     (glob_desc_base),                   //input [31:0]
-    
-    .glob_desc_limit                    (glob_desc_limit),                  //input [31:0]
-    .glob_desc_2_limit                  (glob_desc_2_limit),                //input [31:0]
-    
-    //global set
-    .exe_glob_descriptor_set                (exe_glob_descriptor_set),              //output
-    .exe_glob_descriptor_value              (exe_glob_descriptor_value),            //output [63:0]
-    
-    .exe_glob_descriptor_2_set              (exe_glob_descriptor_2_set),            //output
-    .exe_glob_descriptor_2_value            (exe_glob_descriptor_2_value),          //output [63:0]
-    
-    .exe_glob_param_1_set                   (exe_glob_param_1_set),                 //output
-    .exe_glob_param_1_value                 (exe_glob_param_1_value),               //output [31:0]
-    
-    .exe_glob_param_2_set                   (exe_glob_param_2_set),                 //output
-    .exe_glob_param_2_value                 (exe_glob_param_2_value),               //output [31:0]
-    
-    .exe_glob_param_3_set                   (exe_glob_param_3_set),                 //output
-    .exe_glob_param_3_value                 (exe_glob_param_3_value),               //output [31:0]
-    
-    .dr6_bd_set                         (dr6_bd_set),                       //output
-    
-    //offset control
-    .offset_ret_far_se                  (offset_ret_far_se),                //output
-    .offset_new_stack                   (offset_new_stack),                 //output
-    .offset_new_stack_minus             (offset_new_stack_minus),           //output
-    .offset_new_stack_continue          (offset_new_stack_continue),        //output
-    .offset_leave                       (offset_leave),                     //output
-    .offset_pop                         (offset_pop),                       //output
-    .offset_enter_last                  (offset_enter_last),                //output
-    .offset_ret                         (offset_ret),                       //output
-    .offset_iret_glob_param_4           (offset_iret_glob_param_4),         //output
-    .offset_iret                        (offset_iret),                      //output
-    .offset_ret_imm                     (offset_ret_imm),                   //output
-    .offset_esp                         (offset_esp),                       //output
-    .offset_call                        (offset_call),                      //output
-    .offset_call_keep                   (offset_call_keep),                 //output
-    .offset_call_int_same_first         (offset_call_int_same_first),       //output
-    .offset_call_int_same_next          (offset_call_int_same_next),        //output
-    .offset_int_real                    (offset_int_real),                  //output
-    .offset_int_real_next               (offset_int_real_next),             //output
-    .offset_task                        (offset_task),                      //output
-    
-    //task output
-    .task_eip                           (task_eip),                         //output [31:0]
-
-    //exe output
-    .exe_waiting                        (exe_waiting),                      //output
-    
-    .exe_bound_fault                    (exe_bound_fault),                  //output
-    .exe_trigger_gp_fault               (exe_trigger_gp_fault),             //output
-    .exe_trigger_ts_fault               (exe_trigger_ts_fault),             //output
-    .exe_trigger_ss_fault               (exe_trigger_ss_fault),             //output
-    .exe_trigger_np_fault               (exe_trigger_np_fault),             //output
-    .exe_trigger_pf_fault               (exe_trigger_pf_fault),             //output
-    .exe_trigger_db_fault               (exe_trigger_db_fault),             //output
-    .exe_trigger_nm_fault               (exe_trigger_nm_fault),             //output
-    .exe_load_seg_gp_fault              (exe_load_seg_gp_fault),            //output
-    .exe_load_seg_ss_fault              (exe_load_seg_ss_fault),            //output
-    .exe_load_seg_np_fault              (exe_load_seg_np_fault),            //output
-    
-    .exe_error_code                     (exe_error_code),                   //output [15:0]
-    
-    .exe_result                         (exe_result_cmd),                       //output [31:0]
-    .exe_result2                        (exe_result2_cmd),                      //output [31:0]
-    .exe_result_push                    (exe_result_push_cmd),                  //output [31:0]
-    .exe_result_signals                 (exe_result_signals_cmd),               //output [4:0]
-    
-    .exe_arith_index                    (exe_arith_index),                  //output [3:0]
-    
-    .exe_arith_sub_carry                (exe_arith_sub_carry),              //output
-    .exe_arith_add_carry                (exe_arith_add_carry),              //output
-    .exe_arith_adc_carry                (exe_arith_adc_carry),              //output
-    .exe_arith_sbb_carry                (exe_arith_sbb_carry),              //output
-    
-    .exe_buffer                         (exe_buffer),                       //output [31:0]
-    .exe_buffer_shifted                 (exe_buffer_shifted),               //output [463:0]
+    output reg [31:0]   exe_buffer,
+    output reg [463:0]  exe_buffer_shifted,
     
     //output local
-    .exe_is_8bit_clear                  (exe_is_8bit_clear),                //output
+    output              exe_is_8bit_clear,
     
-    .exe_cmpxchg_switch                 (exe_cmpxchg_switch),               //output
+    output              exe_cmpxchg_switch,
     
-    .exe_task_switch_finished           (exe_task_switch_finished),         //output
+    output              exe_task_switch_finished,
     
-    .exe_eip_from_glob_param_2          (exe_eip_from_glob_param_2),        //output
-    .exe_eip_from_glob_param_2_16bit    (exe_eip_from_glob_param_2_16bit),  //output
+    output              exe_eip_from_glob_param_2,
+    output              exe_eip_from_glob_param_2_16bit,
     
     //branch
-    .exe_branch                         (exe_branch),                       //output
-    .exe_branch_eip                     (exe_branch_eip)                    //output [31:0]
-);// -----------------------------------------------------------------------------
-// x87 result muxing (Phase 1: FNSTCW drives memory store data through exe_result)
-// -----------------------------------------------------------------------------
-assign exe_result_raw    = (fpu_mem_write) ? {16'h0000, fpu_mem_wdata} : exe_result_cmd;
-assign exe_result2       = exe_result2_cmd;
-assign exe_result_push   = exe_result_push_cmd;
-assign exe_result_signals= exe_result_signals_cmd;
-// -----------------------------------------------------------------------------
-// x87 coprocessor (Phase 1)
-// -----------------------------------------------------------------------------
-x87_top u_x87 (
-    .clk            (clk),
-    .rst            (~rst_n),
-
-    .fpu_start      (fpu_start),
-    .fpu_op1        (exe_decoder[7:0]),
-    .fpu_op2        (exe_decoder[15:8]),
-    .fpu_op2_valid  (1'b1),
-
-    .fpu_step       (exe_cmdex),
-
-    .mem_rdata32    (fpu_mem_rdata32),
-    .mem_rdata64    (fpu_mem_rdata64),
-
-    .fpu_busy       (fpu_busy),
-    .fpu_done       (fpu_done),
-
-    .fpu_wb_valid   (fpu_wb_valid),
-    .fpu_wb_kind    (fpu_wb_kind),
-    .fpu_wb_value   (fpu_wb_value),
-
-    .memstore_valid (fpu_memstore_valid),
-    .memstore_size  (fpu_memstore_size),
-    .memstore_data64(fpu_memstore_data64)
+    output              exe_branch,
+    output      [31:0]  exe_branch_eip
 );
 
 //------------------------------------------------------------------------------
 
+//------------------------------------------------------------------------------ eflags
+
+wire [31:0] exe_push_eflags;
+wire [31:0] exe_pushf_eflags;
+
+assign exe_push_eflags   = { 10'b0,idflag,2'b0,acflag,vmflag,rflag,1'b0,ntflag,iopl,oflag,dflag,iflag,tflag,sflag,zflag,1'b0,aflag,1'b0,pflag,1'b1,cflag };
+assign exe_pushf_eflags  = { 10'b0,idflag,2'b0,acflag,1'b0,  1'b0, 1'b0,ntflag,iopl,oflag,dflag,iflag,tflag,sflag,zflag,1'b0,aflag,1'b0,pflag,1'b1,cflag };
+                         
+//------------------------------------------------------------------------------ descriptor load seg
+
+wire [2:0]  exe_segment;
+wire [15:0] exe_selector;
+wire [63:0] exe_descriptor;
+
+wire exe_privilege_not_accepted;
+
+assign exe_segment    = glob_param_1[18:16];
+assign exe_selector   = glob_param_1[15:0];
+assign exe_descriptor = glob_descriptor;
+
+//task_switch, lar,lsl,verr,verw
+assign exe_privilege_not_accepted =
+    exe_selector[`SELECTOR_BITS_RPL] > exe_descriptor[`DESC_BITS_DPL] || cpl > exe_descriptor[`DESC_BITS_DPL];
+
+//------------------------------------------------------------------------------ exe_buffer
+    
+wire        exe_buffer_shift;
+wire        exe_buffer_shift_word;
+
+always @(posedge clk) begin
+    if(rst_n == 1'b0)               exe_buffer_shifted <= 464'd0;
+    else if(exe_buffer_shift)       exe_buffer_shifted <= { exe_buffer_shifted[431:0], exe_buffer };
+    else if(exe_buffer_shift_word)  exe_buffer_shifted <= { exe_buffer_shifted[447:0], exe_buffer[15:0] };
+end
+
+//------------------------------------------------------------------------------
+
+wire [32:0] exe_arith_adc;
+wire [32:0] exe_arith_add;
+wire [31:0] exe_arith_and;
+wire [31:0] exe_arith_not;
+wire [31:0] exe_arith_or;
+wire [32:0] exe_arith_sub;
+wire [32:0] exe_arith_sbb;
+wire [31:0] exe_arith_xor;
+
+wire        exe_cmpxchg_switch_carry;
+
+assign exe_arith_adc   = src + dst + { 31'd0, cflag };
+assign exe_arith_add   = src + dst;
+assign exe_arith_and   = src & dst;
+assign exe_arith_not   = ~dst;
+assign exe_arith_or    = src | dst;
+assign exe_arith_sub   = dst - src;
+assign exe_arith_sbb   = dst - src - { 31'd0, cflag };
+assign exe_arith_xor   = src ^ dst;
+
+assign exe_arith_sub_carry = (exe_cmpxchg_switch)? exe_cmpxchg_switch_carry : exe_arith_sub[32];
+assign exe_arith_add_carry = exe_arith_add[32];
+assign exe_arith_adc_carry = exe_arith_adc[32];
+assign exe_arith_sbb_carry = exe_arith_sbb[32];
+
+//------------------------------------------------------------------------------
+
+wire [15:0] e_seg_by_cmdex;
+
+assign e_seg_by_cmdex =
+    (exe_cmdex[2:0] == 3'd0)?   es :
+    (exe_cmdex[2:0] == 3'd1)?   cs :
+    (exe_cmdex[2:0] == 3'd2)?   ss :
+    (exe_cmdex[2:0] == 3'd3)?   ds :
+    (exe_cmdex[2:0] == 3'd4)?   fs :
+    (exe_cmdex[2:0] == 3'd5)?   gs :
+    (exe_cmdex[2:0] == 3'd6)?   ldtr :
+                                tr;
+
+//------------------------------------------------------------------------------ task switch
+
+//exe -> microcode
+assign task_eip   = (glob_descriptor[`DESC_BITS_TYPE] <= 4'd3)? { 16'd0, exe_buffer_shifted[415:400] } : exe_buffer_shifted[431:400];
+
+//------------------------------------------------------------------------------ Jcc, JCXZ, LOOP
+
+assign exe_branch_eip =
+    (exe_operand_16bit)?    { 16'd0, e_eip_next_sum[15:0] } :
+                            e_eip_next_sum;
+
+//------------------------------------------------------------------------------ Jcc, SETcc
+
+wire exe_condition;
+
+condition exe_condition_inst(
+    .oflag                              (oflag),                            //input
+    .cflag      (cflag), //input
+    .sflag                              (sflag),                            //input
+    .zflag                              (zflag),                            //input
+    .pflag                              (pflag),                            //input
+    
+    .index      (exe_decoder[3:0]), //input [3:0]
+    
+    .condition  (exe_condition)  //output
+);
+
+//------------------------------------------------------------------------------
+
+wire [15:0] e_aaa_sum_ax;
+wire [15:0] e_aas_sub_ax;
+
 // synthesis translate_off
-wire _unused_ok = &{ 1'b0, cs_cache[63:56], cs_cache[54:52], cs_cache[47:16], rd_decoder[87:24], rd_modregrm_imm[31:8], 1'b0 };
+wire _unused_ok = &{ 1'b0, edx[31:16], tr_cache[63:44], tr_cache[39:0], exe_mutex_current[9], exe_mutex_current[7:5], exe_mutex_current[3], exe_mutex_current[1],
+    exe_decoder[7:4], mult_result[65:64], exe_selector[15:3], exe_descriptor[63:48], exe_descriptor[39:0], e_aaa_sum_ax[7:4], e_aas_sub_ax[7:4], 1'b0 };
 // synthesis translate_on
 
 //------------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
-// x87 control (Phase 1)
-//   - Issue one-cycle start pulse when CMD_fpu is active and execute is ready.
-//   - Latch writeback metadata so it is available to write stage.
-// -----------------------------------------------------------------------------
-wire is_x87_mem = (exe_decoder[15:14] != 2'b11);
-wire is_fld_m64 = (exe_decoder[7:0] == 8'hDD) && is_x87_mem && (exe_decoder[13:11] == 3'b000);
+`include "autogen/execute_commands.v"
 
-always @(posedge clk) begin
-    if (rst_n == 1'b0) begin
-        fpu_start        <= 1'b0;
-        exe_fpu_wb_valid <= 1'b0;
-        exe_fpu_wb_kind  <= 3'd0;
-        exe_fpu_wb_value <= 16'h0000;
-        fpu_load64_lo    <= 32'd0;
-    end
-    else begin
-        // default: no start pulse
-        fpu_start <= 1'b0;
-
-        // Clear latched writeback when a new non-FPU instruction loads
-        if (e_load && rd_cmd != `CMD_fpu) begin
-            exe_fpu_wb_valid <= 1'b0;
-            exe_fpu_wb_kind  <= 3'd0;
-            exe_fpu_wb_value <= 16'h0000;
-        end
-
-        // Capture low dword on the first micro-op of a 64-bit x87 memory load.
-        if (exe_cmd == `CMD_fpu && exe_ready && ~exe_waiting && is_fld_m64 && exe_cmdex[0] == 1'b0) begin
-            fpu_load64_lo <= fpu_mem_rdata32;
-        end
-
-        // Start policy:
-        //  - For FLD m64: suppress start on step0; start on step1 when high dword is present.
-        //  - For other x87 ops: start normally.
-        if (exe_cmd == `CMD_fpu && exe_ready && ~exe_waiting) begin
-            if (is_fld_m64 && exe_cmdex[0] == 1'b0) begin
-                fpu_start <= 1'b0;
-            end else begin
-            fpu_start <= 1'b1;
-            end
-        end
-
-        // Latch writeback metadata when produced.
-        if (fpu_wb_valid) begin
-            exe_fpu_wb_valid <= 1'b1;
-            exe_fpu_wb_kind  <= fpu_wb_kind;
-            exe_fpu_wb_value <= fpu_wb_value;
-        end
-        else if (e_load) begin
-            // by default, retain until consumed by write stage (write stage latches on w_load)
-            exe_fpu_wb_valid <= exe_fpu_wb_valid;
-        end
-    end
-end
-
-//----------------------------------------------------------------------------
-// Phase 2B.2: x87 memory stores (currently 16/32-bit; 64-bit writes require pipeline widening)
-wire [31:0] fpu_store_dword = (fpu_memstore_size == 2'd2 && exe_cmdex[0] == 1'b1) ?
-                             fpu_memstore_data64[63:32] :
-                             fpu_memstore_data64[31:0];
-assign exe_result = (fpu_memstore_valid) ? fpu_store_dword : exe_result_raw;
-//----------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+    
 endmodule

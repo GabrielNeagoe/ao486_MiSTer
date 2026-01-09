@@ -319,6 +319,9 @@ wire [2:0]  fpu_wb_kind;
 wire [15:0] fpu_wb_value;
 
 wire [15:0] fpu_mem_rdata;
+wire [31:0] fpu_mem_rdata32;
+reg  [31:0] fpu_load64_lo;
+wire [63:0] fpu_mem_rdata64;
 
 wire [31:0] exe_result_raw;
 
@@ -341,6 +344,11 @@ wire [31:0] exe_result_push_cmd;
 wire [4:0]  exe_result_signals_cmd;
 assign exe_waiting_final = exe_waiting || (exe_cmd == `CMD_fpu && fpu_busy && ~fpu_done);
 assign fpu_mem_rdata = rd_extra_wire[15:0];
+assign fpu_mem_rdata32 = rd_extra_wire;
+
+// Assemble 64-bit load operand across two micro-ops (cmdex toggles).
+// Convention: cmdex[0]==0 -> low dword, cmdex[0]==1 -> high dword.
+assign fpu_mem_rdata64 = { fpu_mem_rdata32, fpu_load64_lo };
     
 wire exe_is_8bit_clear;
 
@@ -904,8 +912,10 @@ x87_top u_x87 (
     .fpu_op2        (exe_decoder[15:8]),
     .fpu_op2_valid  (1'b1),
 
-    .mem_rdata32    ({16'd0, fpu_mem_rdata}),
-    .mem_rdata64    ({48'd0, fpu_mem_rdata}),
+    .fpu_step       (exe_cmdex),
+
+    .mem_rdata32    (fpu_mem_rdata32),
+    .mem_rdata64    (fpu_mem_rdata64),
 
     .fpu_busy       (fpu_busy),
     .fpu_done       (fpu_done),
@@ -932,12 +942,16 @@ wire _unused_ok = &{ 1'b0, cs_cache[63:56], cs_cache[54:52], cs_cache[47:16], rd
 //   - Issue one-cycle start pulse when CMD_fpu is active and execute is ready.
 //   - Latch writeback metadata so it is available to write stage.
 // -----------------------------------------------------------------------------
+wire is_x87_mem = (exe_decoder[15:14] != 2'b11);
+wire is_fld_m64 = (exe_decoder[7:0] == 8'hDD) && is_x87_mem && (exe_decoder[13:11] == 3'b000);
+
 always @(posedge clk) begin
     if (rst_n == 1'b0) begin
         fpu_start        <= 1'b0;
         exe_fpu_wb_valid <= 1'b0;
         exe_fpu_wb_kind  <= 3'd0;
         exe_fpu_wb_value <= 16'h0000;
+        fpu_load64_lo    <= 32'd0;
     end
     else begin
         // default: no start pulse
@@ -950,9 +964,20 @@ always @(posedge clk) begin
             exe_fpu_wb_value <= 16'h0000;
         end
 
-        // When FPU command is active and execute is not waiting, start the x87 unit.
+        // Capture low dword on the first micro-op of a 64-bit x87 memory load.
+        if (exe_cmd == `CMD_fpu && exe_ready && ~exe_waiting && is_fld_m64 && exe_cmdex[0] == 1'b0) begin
+            fpu_load64_lo <= fpu_mem_rdata32;
+        end
+
+        // Start policy:
+        //  - For FLD m64: suppress start on step0; start on step1 when high dword is present.
+        //  - For other x87 ops: start normally.
         if (exe_cmd == `CMD_fpu && exe_ready && ~exe_waiting) begin
+            if (is_fld_m64 && exe_cmdex[0] == 1'b0) begin
+                fpu_start <= 1'b0;
+            end else begin
             fpu_start <= 1'b1;
+            end
         end
 
         // Latch writeback metadata when produced.
@@ -970,6 +995,9 @@ end
 
 //----------------------------------------------------------------------------
 // Phase 2B.2: x87 memory stores (currently 16/32-bit; 64-bit writes require pipeline widening)
-assign exe_result = (fpu_memstore_valid)? fpu_memstore_data64[31:0] : exe_result_raw;
+wire [31:0] fpu_store_dword = (fpu_memstore_size == 2'd2 && exe_cmdex[0] == 1'b1) ?
+                             fpu_memstore_data64[63:32] :
+                             fpu_memstore_data64[31:0];
+assign exe_result = (fpu_memstore_valid) ? fpu_store_dword : exe_result_raw;
 //----------------------------------------------------------------------------
 endmodule
