@@ -1,1 +1,1 @@
-module x87_format; endmodule
+module x87_format(input wire clk,input wire rst); endmodule

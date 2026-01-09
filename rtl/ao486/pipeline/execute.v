@@ -976,7 +976,7 @@ always @(posedge clk) begin
             if (is_fld_m64 && exe_cmdex[0] == 1'b0) begin
                 fpu_start <= 1'b0;
             end else begin
-            fpu_start <= 1'b1;
+                fpu_start <= 1'b1;
             end
         end
 

@@ -295,7 +295,7 @@ module execute_commands(
     output      [31:0]  exe_branch_eip
 );
 
-//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------ 
 
 //------------------------------------------------------------------------------ eflags
 
@@ -332,7 +332,7 @@ always @(posedge clk) begin
     else if(exe_buffer_shift_word)  exe_buffer_shifted <= { exe_buffer_shifted[447:0], exe_buffer[15:0] };
 end
 
-//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------ 
 
 wire [32:0] exe_arith_adc;
 wire [32:0] exe_arith_add;
@@ -359,7 +359,7 @@ assign exe_arith_add_carry = exe_arith_add[32];
 assign exe_arith_adc_carry = exe_arith_adc[32];
 assign exe_arith_sbb_carry = exe_arith_sbb[32];
 
-//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------ 
 
 wire [15:0] e_seg_by_cmdex;
 
@@ -389,11 +389,11 @@ assign exe_branch_eip =
 wire exe_condition;
 
 condition exe_condition_inst(
-    .oflag                              (oflag),                            //input
+    .oflag      (oflag), //input
     .cflag      (cflag), //input
-    .sflag                              (sflag),                            //input
-    .zflag                              (zflag),                            //input
-    .pflag                              (pflag),                            //input
+    .sflag      (sflag), //input
+    .zflag      (zflag), //input
+    .pflag      (pflag), //input
     
     .index      (exe_decoder[3:0]), //input [3:0]
     

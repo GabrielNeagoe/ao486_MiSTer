@@ -6,6 +6,7 @@ module x87_top (
     input  wire [7:0]  fpu_op1,
     input  wire [7:0]  fpu_op2,
     input  wire        fpu_op2_valid,
+    input  wire [3:0]  fpu_step,
 
     input  wire [31:0] mem_rdata32,
     input  wire [63:0] mem_rdata64,
@@ -51,6 +52,7 @@ module x87_top (
         .cmd(dec_cmd),
         .cmd_valid(dec_valid),
         .idx(dec_idx),
+        .step(fpu_step),
 
         .mem_rdata32(mem_rdata32),
         .mem_rdata64(mem_rdata64),
