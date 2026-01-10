@@ -20,7 +20,7 @@ module x87_decode(
     input  wire       op2_valid,
     output reg  [4:0] cmd,
     output reg        cmd_valid,
-    output reg  [3:0] idx
+    output reg  [2:0] idx
 );
 
     // Command encoding must match x87_exec.v
@@ -48,6 +48,8 @@ module x87_decode(
     localparam CMD_FILD_MEM   = 5'd16;
     localparam CMD_FIST_MEM   = 5'd17;
     localparam CMD_FISTP_MEM  = 5'd18;
+        localparam CMD_TRIG      = 5'd19;  // Phase 6B trig (FSIN/FCOS/FPTAN)
+
 
     localparam CMD_FADD_STI   = 5'd20;
     localparam CMD_FMUL_STI   = 5'd21;
@@ -62,7 +64,6 @@ module x87_decode(
     localparam CMD_FDIVR_STI  = 5'd30;
 
         localparam CMD_MISC      = 5'd31;  // Phase 4 misc ops via idx
-        localparam CMD_FPREM     = 5'd19;  // Phase 5A: FPREM/FPREM1 via idx (0=FPREM,1=FPREM1)
 
 wire [1:0] modrm_mod = op2[7:6];
     wire [2:0] modrm_reg = op2[5:3];
@@ -71,7 +72,7 @@ wire [1:0] modrm_mod = op2[7:6];
     always @* begin
         cmd       = CMD_NOP;
         cmd_valid = 1'b0;
-        idx       = 4'd0;
+        idx       = 3'd0;
 
         // Require op2 for most x87 forms except implicit 2-byte forms
         // (FNSTSW AX, FNINIT, FWAIT).
@@ -88,18 +89,6 @@ wire [1:0] modrm_mod = op2[7:6];
             cmd       = CMD_FNINIT;
             cmd_valid = 1'b1;
         end
-
-        else if (op1 == 8'hD9 && op2_valid && (op2 == 8'hF0 || op2 == 8'hF1 || op2 == 8'hF9)) begin
-            // Phase 6A transcendental opcodes (no ModR/M semantics for these second bytes)
-            // D9 F0: F2XM1
-            // D9 F1: FYL2X
-            // D9 F9: FYL2XP1
-            cmd       = CMD_MISC;
-            cmd_valid = 1'b1;
-            if (op2 == 8'hF0)      idx = 4'd8;
-            else if (op2 == 8'hF1) idx = 4'd9;
-            else                   idx = 4'd10;
-        end
         else if (op2_valid) begin
             // Integer conversions (Phase 3) - memory only
             // Use idx[0] = 0 for 16-bit (DF), 1 for 32-bit (DB)
@@ -107,17 +96,17 @@ wire [1:0] modrm_mod = op2[7:6];
                 if (modrm_reg == 3'b000) begin
                     cmd       = CMD_FILD_MEM;
                     cmd_valid = 1'b1;
-                    idx       = {3'b000, (op1 == 8'hDB)};
+                    idx       = {2'b00, (op1 == 8'hDB)};
                 end
                 else if (modrm_reg == 3'b010) begin
                     cmd       = CMD_FIST_MEM;
                     cmd_valid = 1'b1;
-                    idx       = {3'b000, (op1 == 8'hDB)};
+                    idx       = {2'b00, (op1 == 8'hDB)};
                 end
                 else if (modrm_reg == 3'b011) begin
                     cmd       = CMD_FISTP_MEM;
                     cmd_valid = 1'b1;
-                    idx       = {3'b000, (op1 == 8'hDB)};
+                    idx       = {2'b00, (op1 == 8'hDB)};
                 end
             end
 
@@ -145,33 +134,17 @@ wire [1:0] modrm_mod = op2[7:6];
 
             // Register stack ops via ESC opcodes (modrm_mod==11)
             if (!cmd_valid && op1 == 8'hD9 && modrm_mod == 2'b11) begin
-                // Phase 4/5 misc single-byte opcodes (ModR/M fixed)
-                // D9 E0=FCHS, E1=FABS, E4=FTST, E5=FXAM, FA=FSQRT, FC=FRNDINT, FD=FSCALE, F4=FXTRACT
-                // D9 F8=FPREM, F5=FPREM1 (Phase 5A) -> CMD_FPREM idx selects variant
-                case (op2)
-                    8'hE0: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd0; end
-                    8'hE1: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd1; end
-                    8'hE4: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd2; end
-                    8'hE5: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd3; end
-                    8'hFA: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd4; end
-                    8'hFC: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd5; end
-                    8'hFD: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd6; end
-                    8'hF4: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx       = 4'd7; end
-                    8'hF8: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx       = 4'd0; end
-                    8'hF5: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx       = 4'd1; end
-                    default: begin end
-                endcase
                 // D9 C0+i: FLD ST(i)
                 if (op2[7:3] == 5'b11000) begin
                     cmd       = CMD_FLD_STI;
                     cmd_valid = 1'b1;
-                    idx       = {1'b0, modrm_rm};
+                    idx       = modrm_rm;
                 end
                 // D9 C8+i: FXCH ST(i)
                 else if (op2[7:3] == 5'b11001) begin
                     cmd       = CMD_FXCH_STI;
                     cmd_valid = 1'b1;
-                    idx       = {1'b0, modrm_rm};
+                    idx       = modrm_rm;
                 end
             end
             if (!cmd_valid && op1 == 8'hDD && modrm_mod == 2'b11) begin
@@ -179,39 +152,51 @@ wire [1:0] modrm_mod = op2[7:6];
                 if (op2[7:3] == 5'b11011) begin
                     cmd       = CMD_FSTP_STI;
                     cmd_valid = 1'b1;
-                    idx       = {1'b0, modrm_rm};
+                    idx       = modrm_rm;
                 end
             end
 
             // Arithmetic / compare (register forms)
             if (!cmd_valid && op1 == 8'hD8 && modrm_mod == 2'b11) begin
                 case (modrm_reg)
-                    3'b000: begin cmd = CMD_FADD_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b001: begin cmd = CMD_FMUL_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b110: begin cmd = CMD_FDIV_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b111: begin cmd = CMD_FDIVR_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b100: begin cmd = CMD_FSUB_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b101: begin cmd = CMD_FSUBR_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
+                    3'b000: begin cmd = CMD_FADD_STI; cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b001: begin cmd = CMD_FMUL_STI; cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b110: begin cmd = CMD_FDIV_STI; cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b111: begin cmd = CMD_FDIVR_STI; cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b100: begin cmd = CMD_FSUB_STI; cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b101: begin cmd = CMD_FSUBR_STI; cmd_valid = 1'b1; idx = modrm_rm; end
                     default: begin end
                 endcase
             end
             if (!cmd_valid && op1 == 8'hD8 && modrm_mod == 2'b11) begin
-                if (modrm_reg == 3'b010) begin cmd = CMD_FCOM_STI;  cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                if (modrm_reg == 3'b011) begin cmd = CMD_FCOMP_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
+                if (modrm_reg == 3'b010) begin cmd = CMD_FCOM_STI;  cmd_valid = 1'b1; idx = modrm_rm; end
+                if (modrm_reg == 3'b011) begin cmd = CMD_FCOMP_STI; cmd_valid = 1'b1; idx = modrm_rm; end
             end
 
             // Pop variants (DE)
             if (!cmd_valid && op1 == 8'hDE && modrm_mod == 2'b11) begin
                 case (modrm_reg)
-                    3'b000: begin cmd = CMD_FADDP_STI;  cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b001: begin cmd = CMD_FMULP_STI;  cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b100: begin cmd = CMD_FSUBP_STI;  cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b101: begin cmd = CMD_FSUBRP_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b110: begin cmd = CMD_FDIVP_STI;  cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
-                    3'b111: begin cmd = CMD_FDIVRP_STI; cmd_valid = 1'b1; idx       = {1'b0, modrm_rm}; end
+                    3'b000: begin cmd = CMD_FADDP_STI;  cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b001: begin cmd = CMD_FMULP_STI;  cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b100: begin cmd = CMD_FSUBP_STI;  cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b101: begin cmd = CMD_FSUBRP_STI; cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b110: begin cmd = CMD_FDIVP_STI;  cmd_valid = 1'b1; idx = modrm_rm; end
+                    3'b111: begin cmd = CMD_FDIVRP_STI; cmd_valid = 1'b1; idx = modrm_rm; end
                     default: begin end
                 endcase
             end
         end
+    
+            // Phase 6B: Trig transcendentals (register-only encodings)
+            // D9 FE: FSIN   (modrm=11111110)
+            // D9 FF: FCOS   (modrm=11111111)
+            // D9 F2: FPTAN  (modrm=11110010)
+            // idx: 0=FSIN, 1=FCOS, 2=FPTAN
+            if (!cmd_valid && op1 == 8'hD9 && modrm_mod == 2'b11) begin
+                if (op2 == 8'hFE) begin cmd = CMD_TRIG; cmd_valid = 1'b1; idx = 3'd0; end
+                else if (op2 == 8'hFF) begin cmd = CMD_TRIG; cmd_valid = 1'b1; idx = 3'd1; end
+                else if (op2 == 8'hF2) begin cmd = CMD_TRIG; cmd_valid = 1'b1; idx = 3'd2; end
+            end
+
     end
 endmodule
