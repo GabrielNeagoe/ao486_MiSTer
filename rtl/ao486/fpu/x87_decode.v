@@ -48,8 +48,6 @@ module x87_decode(
     localparam CMD_FILD_MEM   = 5'd16;
     localparam CMD_FIST_MEM   = 5'd17;
     localparam CMD_FISTP_MEM  = 5'd18;
-        localparam CMD_TRIG      = 5'd19;  // Phase 6B trig (FSIN/FCOS/FPTAN)
-
 
     localparam CMD_FADD_STI   = 5'd20;
     localparam CMD_FMUL_STI   = 5'd21;
@@ -64,6 +62,7 @@ module x87_decode(
     localparam CMD_FDIVR_STI  = 5'd30;
 
         localparam CMD_MISC      = 5'd31;  // Phase 4 misc ops via idx
+        localparam CMD_FPREM     = 5'd19;  // Phase 5A: FPREM/FPREM1 via idx (0=FPREM,1=FPREM1)
 
 wire [1:0] modrm_mod = op2[7:6];
     wire [2:0] modrm_reg = op2[5:3];
@@ -134,6 +133,22 @@ wire [1:0] modrm_mod = op2[7:6];
 
             // Register stack ops via ESC opcodes (modrm_mod==11)
             if (!cmd_valid && op1 == 8'hD9 && modrm_mod == 2'b11) begin
+                // Phase 4/5 misc single-byte opcodes (ModR/M fixed)
+                // D9 E0=FCHS, E1=FABS, E4=FTST, E5=FXAM, FA=FSQRT, FC=FRNDINT, FD=FSCALE, F4=FXTRACT
+                // D9 F8=FPREM, F5=FPREM1 (Phase 5A) -> CMD_FPREM idx selects variant
+                case (op2)
+                    8'hE0: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd0; end
+                    8'hE1: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd1; end
+                    8'hE4: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd2; end
+                    8'hE5: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd3; end
+                    8'hFA: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd4; end
+                    8'hFC: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd5; end
+                    8'hFD: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd6; end
+                    8'hF4: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd7; end
+                    8'hF8: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd0; end
+                    8'hF5: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd1; end
+                    default: begin end
+                endcase
                 // D9 C0+i: FLD ST(i)
                 if (op2[7:3] == 5'b11000) begin
                     cmd       = CMD_FLD_STI;
@@ -186,17 +201,5 @@ wire [1:0] modrm_mod = op2[7:6];
                 endcase
             end
         end
-    
-            // Phase 6B: Trig transcendentals (register-only encodings)
-            // D9 FE: FSIN   (modrm=11111110)
-            // D9 FF: FCOS   (modrm=11111111)
-            // D9 F2: FPTAN  (modrm=11110010)
-            // idx: 0=FSIN, 1=FCOS, 2=FPTAN
-            if (!cmd_valid && op1 == 8'hD9 && modrm_mod == 2'b11) begin
-                if (op2 == 8'hFE) begin cmd = CMD_TRIG; cmd_valid = 1'b1; idx = 3'd0; end
-                else if (op2 == 8'hFF) begin cmd = CMD_TRIG; cmd_valid = 1'b1; idx = 3'd1; end
-                else if (op2 == 8'hF2) begin cmd = CMD_TRIG; cmd_valid = 1'b1; idx = 3'd2; end
-            end
-
     end
 endmodule
