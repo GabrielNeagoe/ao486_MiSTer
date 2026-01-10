@@ -147,6 +147,13 @@ wire [1:0] modrm_mod = op2[7:6];
                     8'hF4: begin cmd = CMD_MISC;  cmd_valid = 1'b1; idx = 3'd7; end
                     8'hF8: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd0; end
                     8'hF5: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd1; end
+                    // Phase 6A/6B (mapped onto CMD_FPREM idx 2..7 to avoid expanding cmd width)
+                    8'hF0: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd2; end // F2XM1
+                    8'hF1: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd3; end // FYL2X
+                    8'hF9: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd4; end // FYL2XP1
+                    8'hF2: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd5; end // FPTAN
+                    8'hFE: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd6; end // FSIN
+                    8'hFF: begin cmd = CMD_FPREM; cmd_valid = 1'b1; idx = 3'd7; end // FCOS
                     default: begin end
                 endcase
                 // D9 C0+i: FLD ST(i)

@@ -258,7 +258,7 @@ module x87_exec (
         begin
             s = d[63]; e = d[62:52]; f = d[51:0];
             if (e == 11'h7FF) begin
-                f64_to_s32_trunc = s ? -32'sd2147483648 : 32'sd2147483647;
+                f64_to_s32_trunc = s ? 32'sh80000000 : 32'sd2147483647;
             end
             else if (e == 0) begin
                 f64_to_s32_trunc = 32'sd0;
@@ -269,7 +269,7 @@ module x87_exec (
                     f64_to_s32_trunc = 32'sd0;
                 end
                 else if (exp_unb > 31) begin
-                    f64_to_s32_trunc = s ? -32'sd2147483648 : 32'sd2147483647;
+                    f64_to_s32_trunc = s ? 32'sh80000000 : 32'sd2147483647;
                 end
                 else begin
                     mant = {1'b1,f};
@@ -464,6 +464,11 @@ fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(add_y));
     fp64_mul u_prem_mul(.a(prem_qf), .b(st1_val), .y(prem_prod_y), .inexact(prem_prod_inexact));
     fp64_add u_prem_sub(.a(st0_val), .b({~prem_prod_y[63], prem_prod_y[62:0]}), .y(prem_rem_y), .inexact(prem_rem_inexact));
 
+
+    // Phase 6A: F2XM1 small-argument approximation: (2^x - 1) ~= x*ln2 for |x| << 1
+    wire [63:0] f2xm1_mul_y;
+    wire        f2xm1_mul_inexact;
+    fp64_mul u_f2xm1_mul(.a(st0_val), .b(64'h3FE62E42FEFA39EF), .y(f2xm1_mul_y), .inexact(f2xm1_mul_inexact));
     // Compute integer quotient (as float64) for FPREM/FPREM1
     always @(*) begin
         prem_qf = 64'd0;
@@ -644,12 +649,118 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
                         // ST0 = ST(i) / ST0
                         st[phys(3'd0)] <= divr_y;
                     end
-                    
+                    CMD_FPREM: begin
+                        // NOTE: To avoid widening 'cmd' (5 bits) we multiplex Phase 6A/6B opcodes on CMD_FPREM using idx[2:0]:
+                        //   idx=0 FPREM, idx=1 FPREM1, idx=2 F2XM1, idx=3 FYL2X, idx=4 FYL2XP1, idx=5 FPTAN, idx=6 FSIN, idx=7 FCOS
+                        if (idx >= 3'd2) begin
+                            // Single-operand ops use ST0; FYL2X/YL2XP1 use ST1 and pop ST0; FPTAN pushes 1.0
+                            if (idx == 3'd3 || idx == 3'd4) begin
+                                if (ftw[phys(3'd0)*2 +: 2] == 2'b11 || ftw[phys(3'd1)*2 +: 2] == 2'b11) begin
+                                    fsw[0] <= 1'b1; // IE
+                                end
+                                else begin
+                                    // Very limited shortcuts (Phase 6A baseline): exact handling for x in {1.0, 2.0, 0.5} and x+1 in {1.0, 2.0}
+                                    if (idx == 3'd3) begin
+                                        // FYL2X: ST1 = ST1 * log2(ST0); pop ST0
+                                        if (st0_val == 64'h3FF0000000000000) begin
+                                            // log2(1)=0 -> result=0
+                                            st[phys(3'd1)] <= 64'h0000000000000000;
+                                        end
+                                        else if (st0_val == 64'h4000000000000000) begin
+                                            // log2(2)=1 -> result=ST1
+                                            st[phys(3'd1)] <= st1_val;
+                                        end
+                                        else if (st0_val == 64'h3FE0000000000000) begin
+                                            // log2(0.5)=-1 -> result=-ST1
+                                            st[phys(3'd1)] <= {~st1_val[63], st1_val[62:0]};
+                                        end
+                                        else begin
+                                            // Not implemented: return QNaN and set IE (accuracy gap vs Intel x87)
+                                            st[phys(3'd1)] <= 64'h7FF8000000000000;
+                                            fsw[0] <= 1'b1; // IE
+                                        end
+                                    end
+                                    else begin
+                                        // FYL2XP1: ST1 = ST1 * log2(ST0+1); pop ST0
+                                        if (st0_val == 64'h0000000000000000) begin
+                                            // log2(1)=0 -> 0
+                                            st[phys(3'd1)] <= 64'h0000000000000000;
+                                        end
+                                        else if (st0_val == 64'h3FF0000000000000) begin
+                                            // log2(2)=1 -> ST1
+                                            st[phys(3'd1)] <= st1_val;
+                                        end
+                                        else begin
+                                            st[phys(3'd1)] <= 64'h7FF8000000000000;
+                                            fsw[0] <= 1'b1; // IE
+                                        end
+                                    end
+                                    // pop ST0
+                                    ftw[phys(3'd0)*2 +: 2] <= 2'b11;
+                                    top <= top + 3'd1;
+                                end
+                            end
+                            else begin
+                                // Single-operand ops on ST0 (and optional push for FPTAN)
+                                if (ftw[phys(3'd0)*2 +: 2] == 2'b11) begin
+                                    fsw[0] <= 1'b1; // IE
+                                end
+                                else if (idx == 3'd2) begin
+                                    // F2XM1: (2^x - 1) ~ x*ln2 for small |x|, else QNaN+IE
+                                    if (st0_val[62:52] < 11'd1013) begin
+                                        st[phys(3'd0)] <= f2xm1_mul_y;
+                                        fsw[5] <= f2xm1_mul_inexact; // PE if inexact (best-effort)
+                                    end
+                                    else begin
+                                        st[phys(3'd0)] <= 64'h7FF8000000000000;
+                                        fsw[0] <= 1'b1; // IE
+                                    end
+                                end
+                                else if (idx == 3'd6) begin
+                                    // FSIN: sin(x) ~ x for small |x|, else QNaN+IE
+                                    if (st0_val[62:52] < 11'd1013) begin
+                                        st[phys(3'd0)] <= st0_val;
+                                    end
+                                    else begin
+                                        st[phys(3'd0)] <= 64'h7FF8000000000000;
+                                        fsw[0] <= 1'b1; // IE
+                                    end
+                                end
+                                else if (idx == 3'd7) begin
+                                    // FCOS: cos(x) ~ 1.0 for small |x|, else QNaN+IE
+                                    if (st0_val[62:52] < 11'd1013) begin
+                                        st[phys(3'd0)] <= 64'h3FF0000000000000;
+                                    end
+                                    else begin
+                                        st[phys(3'd0)] <= 64'h7FF8000000000000;
+                                        fsw[0] <= 1'b1; // IE
+                                    end
+                                end
+                                else begin
+                                    // idx==5: FPTAN
+                                    // Stack overflow check for push
+                                    if (ftw[phys(3'd7)*2 +: 2] != 2'b11) begin
+                                        fsw[0] <= 1'b1; // IE
+                                    end
+                                    else if (st0_val[62:52] < 11'd1013) begin
+                                        // tan(x) ~ x; push 1.0
+                                        st[phys(3'd0)] <= st0_val;
+                                        top <= top - 3'd1;
+                                        st[phys(3'd7)] <= 64'h3FF0000000000000;
+                                        ftw[phys(3'd7)*2 +: 2] <= 2'b00;
+                                    end
+                                    else begin
+                                        st[phys(3'd0)] <= 64'h7FF8000000000000;
+                                        fsw[0] <= 1'b1; // IE
+                                    end
+                                end
+                            end
+                        end
+                        else begin
                     // ----------------------
                     // Phase 5A: FPREM/FPREM1 (ST0 = ST0 - Q*ST1)
                     // idx=0:FPREM (truncate), idx=1:FPREM1 (nearest-even)
                     // ----------------------
-                    CMD_FPREM: begin
                         // basic stack-empty checks
                         if (ftw[phys(3'd0)*2 +: 2] == 2'b11 || ftw[phys(3'd1)*2 +: 2] == 2'b11) begin
                             fsw[0] <= 1'b1; // IE
@@ -664,8 +775,9 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
                             st[phys(3'd0)] <= prem_rem_y;
                             // C2 = 0 (complete) for single-pass implementation
                             fsw[10] <= 1'b0;
-                            // PE if any inexact occurred in quotient rounding or arithmetic
-                            fsw[5]  <= prem_q_inexact | prem_div_inexact | prem_prod_inexact | prem_rem_inexact;
+                                // PE if any inexact occurred in quotient rounding or arithmetic
+                                fsw[5]  <= prem_q_inexact | prem_div_inexact | prem_prod_inexact | prem_rem_inexact;
+                            end
                         end
                     end
 
