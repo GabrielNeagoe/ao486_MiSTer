@@ -5,7 +5,7 @@ module x87_exec (
     input  wire        start,
     input  wire [4:0]  cmd,
     input  wire        cmd_valid,
-    input  wire [2:0]  idx,
+    input  wire [3:0]  idx,
     input  wire [3:0]  step,
 
     input  wire [31:0] mem_rdata32,
@@ -442,11 +442,54 @@ module x87_exec (
     wire [63:0] sqrt_y;
     wire        sqrt_invalid;
     wire        sqrt_inexact;
-fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(add_y));
-    fp64_mul u_mul(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(mul_y));
-    fp64_div u_div(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(div_y));
+fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx[2:0])]), .y(add_y));
+    fp64_mul u_mul(.a(st[phys(3'd0)]), .b(st[phys(idx[2:0])]), .y(mul_y));
+    fp64_div u_div(.a(st[phys(3'd0)]), .b(st[phys(idx[2:0])]), .y(div_y));
+
+    // Additional generic FP units for multi-step transcendental sequences (Phase 6A full math)
+    reg  [63:0] t_op_a;
+    reg  [63:0] t_op_b;
+    wire [63:0] t_add_y;
+    wire [63:0] t_mul_y;
+
+    fp64_add u_add2(.a(t_op_a), .b(t_op_b), .y(t_add_y));
+    fp64_mul u_mul2(.a(t_op_a), .b(t_op_b), .y(t_mul_y));
+
+    // FSM for multi-cycle transcendentals
+    reg        t_active;
+    reg  [3:0] t_state;
+    reg  [3:0] t_misc;
+    reg  [63:0] t_x;
+    reg  [63:0] t_y;
+    reg  [63:0] t_y2;
+    reg  [63:0] t_y3;
+    reg  [63:0] t_y4;
+    reg  [63:0] t_term1;
+    reg  [63:0] t_term2;
+    reg  [63:0] t_term3;
+    reg  [63:0] t_term4;
+    reg  [63:0] t_poly;
+    reg  [63:0] t_log2;
+    reg  signed [15:0] t_e_unb;
+    reg  [63:0] t_e_f64;
+    reg  [63:0] t_m_f64;
+    reg  [63:0] t_st0;
+    reg  [63:0] t_st1;
+
+    localparam [63:0] FP64_P1    = 64'h3FF0000000000000; // +1.0
+    localparam [63:0] FP64_M1    = 64'hBFF0000000000000; // -1.0
+    // Coefficients for exp2(x)-1 (x in [-1,1]) series: sum_{n=1..4} (ln2^n/n!) * x^n
+    localparam [63:0] C_LN2      = 64'h3FE62E42FEFA39EF;
+    localparam [63:0] C_E2_2     = 64'h3FCEBFBDFF82C696; // ln2^2/2
+    localparam [63:0] C_E2_3     = 64'h3FAC6B08D78310B8; // ln2^3/6
+    localparam [63:0] C_E2_4     = 64'h3F83B2AB6FB71C3A; // ln2^4/24
+    // Coefficients for log2(1+y) where y=m-1 in [0,1): (1/ln2)*(y - y^2/2 + y^3/3 - y^4/4)
+    localparam [63:0] C_L2_1     = 64'h3FF71547652B82FE; // 1/ln2
+    localparam [63:0] C_L2_2     = 64'hBFE71547652B82FE; // -1/(2 ln2)
+    localparam [63:0] C_L2_3     = 64'h3FDDAE7CE1D0E734; // 1/(3 ln2)
+    localparam [63:0] C_L2_4     = 64'hBFDA8E4A7F69F7C6; // -1/(4 ln2)
     // Swapped-operand divide for FDIVR and FDIVP-style encodings
-    fp64_div u_divr(.a(st[phys(idx)]), .b(st[phys(3'd0)]), .y(divr_y));
+    fp64_div u_divr(.a(st[phys(idx[2:0])]), .b(st[phys(3'd0)]), .y(divr_y));
 
     // Phase 5A dedicated datapath: ST0/ST1 division and remainder
     wire [63:0] st0_val = st[phys(3'd0)];
@@ -481,18 +524,19 @@ fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(add_y));
         end
     end
 
-    fp64_cmp u_cmp(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .lt(cmp_lt), .eq(cmp_eq), .gt(cmp_gt));
+    fp64_cmp u_cmp(.a(st[phys(3'd0)]), .b(st[phys(idx[2:0])]), .lt(cmp_lt), .eq(cmp_eq), .gt(cmp_gt));
 
     
     fp64_sqrt u_sqrt(.a(st[phys(3'd0)]), .y(sqrt_y), .invalid(sqrt_invalid), .inexact(sqrt_inexact));
-fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}), .y(sub_y));
-    fp64_add u_subr(.a(st[phys(idx)]), .b({~st[phys(3'd0)][63], st[phys(3'd0)][62:0]}), .y(subr_y));
+fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx[2:0])][63], st[phys(idx[2:0])][62:0]}), .y(sub_y));
+    fp64_add u_subr(.a(st[phys(idx[2:0])]), .b({~st[phys(3'd0)][63], st[phys(3'd0)][62:0]}), .y(subr_y));
 
     // Store latch for 64-bit memory stores (two-step)
     reg [63:0] store_latch;
     reg        store_latch_valid;
 
     integer i;
+    reg start_multi;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -511,6 +555,12 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
             memstore_data64<= 64'd0;
             busy <= 1'b0;
             done <= 1'b0;
+        start_multi = 1'b0;
+        t_active <= 1'b0;
+        t_state  <= 4'd0;
+        t_misc   <= 4'd0;
+        t_op_a   <= 64'd0;
+        t_op_b   <= 64'd0;
             wb_valid <= 1'b0;
             wb_kind  <= WB_NONE;
             wb_value <= 16'd0;
@@ -518,6 +568,11 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
         else begin
             // defaults
             done <= 1'b0;
+        t_active <= 1'b0;
+        t_state  <= 4'd0;
+        t_misc   <= 4'd0;
+        t_op_a   <= 64'd0;
+        t_op_b   <= 64'd0;
             wb_valid <= 1'b0;
             wb_kind  <= WB_NONE;
             wb_value <= 16'd0;
@@ -526,7 +581,279 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
             memstore_data64<= 64'd0;
             busy <= 1'b0;
 
-            if (start && cmd_valid) begin
+    
+        // --------------------------------------------------------------------
+        // Multi-cycle transcendental FSM (Phase 6A full math)
+        // --------------------------------------------------------------------
+        if (t_active) begin
+            busy <= 1'b1;
+
+            case (t_state)
+                4'd0: begin
+                    // Capture operands and (for FYL2XP1) compute x = ST0 + 1.0
+                    t_st0 <= st[phys(3'd0)];
+                    t_st1 <= st[phys(3'd1)];
+
+                    if (t_misc == 4'd10) begin
+                        t_op_a <= st[phys(3'd0)];
+                        t_op_b <= FP64_P1;
+                        t_state <= 4'd1;
+                    end
+                    else begin
+                        t_x <= st[phys(3'd0)];
+                        t_state <= 4'd2;
+                    end
+                end
+
+                4'd1: begin
+                    // FYL2XP1: x = ST0 + 1.0
+                    t_x <= t_add_y;
+                    t_state <= 4'd2;
+                end
+
+                4'd2: begin
+                    // Dispatch by t_misc
+                    if (t_misc == 4'd8) begin
+                        // F2XM1 setup: x in t_st0
+                        t_op_a <= t_st0;
+                        t_op_b <= t_st0;
+                        t_state <= 4'd20;
+                    end
+                    else begin
+                        // FYL2X/FYL2XP1: decompose x into exponent and mantissa in [1,2)
+                        reg [10:0] exp;
+                        reg [51:0] frac;
+                        reg        sign;
+                        integer k;
+                        reg [52:0] frac53;
+                        reg [5:0]  sh;
+                        reg [52:0] norm;
+                        sign = t_x[63];
+                        exp  = t_x[62:52];
+                        frac = t_x[51:0];
+
+                        // Default: quiet NaN
+                        t_m_f64 <= 64'h7FF8000000000000;
+                        t_e_unb <= 16'sd0;
+
+                        if (exp == 11'h7FF) begin
+                            // NaN/Inf
+                            t_state <= 4'd15;
+                        end
+                        else if (sign || (exp == 11'h000 && frac == 52'd0)) begin
+                            // log2(x) undefined for x<=0
+                            t_state <= 4'd15;
+                        end
+                        else begin
+                            if (exp == 11'h000) begin
+                                // Subnormal: normalize
+                                sh = 6'd0;
+                                for (k = 51; k > 0; k = k - 1) begin
+                                    if (frac[k] && sh == 6'd0) begin
+                                        sh = 6'd(51 - k);
+                                    end
+                                end
+                                if (frac[0] && sh == 6'd0) sh = 6'd51;
+                                norm    = {1'b0, frac} << (sh + 1);
+                                t_e_unb <= -16'sd1022 - $signed({10'd0, sh});
+                                t_m_f64 <= {1'b0, 11'd1023, norm[51:0]};
+                            end
+                            else begin
+                                t_e_unb <= $signed({1'b0, exp}) - 16'sd1023;
+                                t_m_f64 <= {1'b0, 11'd1023, frac};
+                            end
+                            t_e_f64 <= s32_to_f64({{16{t_e_unb[15]}}, t_e_unb});
+                            t_op_a  <= t_m_f64;
+                            t_op_b  <= FP64_M1;
+                            t_state <= 4'd3;
+                        end
+                    end
+                end
+
+                4'd3: begin
+                    // y = m - 1
+                    t_y    <= t_add_y;
+                    t_op_a <= t_add_y;
+                    t_op_b <= t_add_y;
+                    t_state <= 4'd4;
+                end
+
+                4'd4: begin
+                    // y2 = y*y
+                    t_y2   <= t_mul_y;
+                    t_op_a <= t_mul_y;
+                    t_op_b <= t_y;
+                    t_state <= 4'd5;
+                end
+
+                4'd5: begin
+                    // y3 = y2*y
+                    t_y3   <= t_mul_y;
+                    t_op_a <= t_mul_y;
+                    t_op_b <= t_y;
+                    t_state <= 4'd6;
+                end
+
+                4'd6: begin
+                    // y4 = y3*y
+                    t_y4   <= t_mul_y;
+                    // term1 = a1*y
+                    t_op_a <= t_y;
+                    t_op_b <= C_L2_1;
+                    t_state <= 4'd7;
+                end
+
+                4'd7: begin
+                    t_term1 <= t_mul_y;
+                    t_op_a  <= t_y2;
+                    t_op_b  <= C_L2_2;
+                    t_state <= 4'd8;
+                end
+
+                4'd8: begin
+                    t_term2 <= t_mul_y;
+                    t_op_a  <= t_y3;
+                    t_op_b  <= C_L2_3;
+                    t_state <= 4'd9;
+                end
+
+                4'd9: begin
+                    t_term3 <= t_mul_y;
+                    t_op_a  <= t_y4;
+                    t_op_b  <= C_L2_4;
+                    t_state <= 4'd10;
+                end
+
+                4'd10: begin
+                    t_term4 <= t_mul_y;
+                    t_op_a  <= t_term1;
+                    t_op_b  <= t_term2;
+                    t_state <= 4'd11;
+                end
+
+                4'd11: begin
+                    t_poly  <= t_add_y; // sum12
+                    t_op_a  <= t_term3;
+                    t_op_b  <= t_term4;
+                    t_state <= 4'd12;
+                end
+
+                4'd12: begin
+                    t_log2  <= t_add_y; // sum34
+                    t_op_a  <= t_poly;
+                    t_op_b  <= t_log2;
+                    t_state <= 4'd13;
+                end
+
+                4'd13: begin
+                    t_poly  <= t_add_y; // poly
+                    t_op_a  <= t_e_f64;
+                    t_op_b  <= t_add_y;
+                    t_state <= 4'd14;
+                end
+
+                4'd14: begin
+                    t_log2  <= t_add_y; // log2(x)
+                    t_op_a  <= t_st1;
+                    t_op_b  <= t_add_y;
+                    t_state <= 4'd16;
+                end
+
+                4'd15: begin
+                    // Invalid: return quiet NaN
+                    st[phys(3'd1)] <= 64'h7FF8000000000000;
+                    ftw[phys(3'd0)] <= 2'b11;
+                    top <= top + 3'd1;
+                    t_active <= 1'b0;
+                    busy <= 1'b0;
+                    done <= 1'b1;
+                end
+
+                4'd16: begin
+                    // result = ST1 * log2(...)
+                    st[phys(3'd1)] <= t_mul_y;
+                    ftw[phys(3'd0)] <= 2'b11;
+                    top <= top + 3'd1;
+                    t_active <= 1'b0;
+                    busy <= 1'b0;
+                    done <= 1'b1;
+                end
+
+                // ------------------- F2XM1 pipeline (states 20+) ----------------
+                4'd20: begin
+                    // x2 computed
+                    t_y2   <= t_mul_y;
+                    t_op_a <= t_mul_y;
+                    t_op_b <= t_st0;
+                    t_state <= 4'd21;
+                end
+                4'd21: begin
+                    // x3
+                    t_y3   <= t_mul_y;
+                    t_op_a <= t_mul_y;
+                    t_op_b <= t_st0;
+                    t_state <= 4'd22;
+                end
+                4'd22: begin
+                    // x4
+                    t_y4   <= t_mul_y;
+                    t_op_a <= t_st0;
+                    t_op_b <= C_LN2;
+                    t_state <= 4'd23;
+                end
+                4'd23: begin
+                    t_term1 <= t_mul_y;
+                    t_op_a  <= t_y2;
+                    t_op_b  <= C_E2_2;
+                    t_state <= 4'd24;
+                end
+                4'd24: begin
+                    t_term2 <= t_mul_y;
+                    t_op_a  <= t_y3;
+                    t_op_b  <= C_E2_3;
+                    t_state <= 4'd25;
+                end
+                4'd25: begin
+                    t_term3 <= t_mul_y;
+                    t_op_a  <= t_y4;
+                    t_op_b  <= C_E2_4;
+                    t_state <= 4'd26;
+                end
+                4'd26: begin
+                    t_term4 <= t_mul_y;
+                    t_op_a  <= t_term1;
+                    t_op_b  <= t_term2;
+                    t_state <= 4'd27;
+                end
+                4'd27: begin
+                    t_poly  <= t_add_y; // sum12
+                    t_op_a  <= t_term3;
+                    t_op_b  <= t_term4;
+                    t_state <= 4'd28;
+                end
+                4'd28: begin
+                    t_log2  <= t_add_y; // sum34
+                    t_op_a  <= t_poly;
+                    t_op_b  <= t_add_y;
+                    t_state <= 4'd29;
+                end
+                4'd29: begin
+                    // Final sum -> write ST0
+                    st[phys(3'd0)] <= t_add_y; // 2^x - 1 approximation
+                    t_active <= 1'b0;
+                    busy <= 1'b0;
+                    done <= 1'b1;
+                end
+
+                default: begin
+                    t_active <= 1'b0;
+                    busy <= 1'b0;
+                    done <= 1'b1;
+                end
+            endcase
+        end
+        else if (start && cmd_valid) begin
+
                 busy <= 1'b1;
 
                 case (cmd)
@@ -611,19 +938,19 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
                     // ----------------------
                     CMD_FLD_STI: begin
                         top <= top - 3'd1;
-                        st[phys(3'd7)] <= st[phys(idx)];
-                        ftw[phys(3'd7)*2 +: 2] <= ftw[phys(idx)*2 +: 2];
+                        st[phys(3'd7)] <= st[phys(idx[2:0])];
+                        ftw[phys(3'd7)*2 +: 2] <= ftw[phys(idx[2:0])*2 +: 2];
                     end
 
                     CMD_FXCH_STI: begin
-                        st[phys(3'd0)] <= st[phys(idx)];
-                        st[phys(idx)]  <= st[phys(3'd0)];
+                        st[phys(3'd0)] <= st[phys(idx[2:0])];
+                        st[phys(idx[2:0])]  <= st[phys(3'd0)];
                         // tags unchanged
                     end
 
                     CMD_FSTP_STI: begin
-                        st[phys(idx)] <= st[phys(3'd0)];
-                        ftw[phys(idx)*2 +: 2] <= ftw[phys(3'd0)*2 +: 2];
+                        st[phys(idx[2:0])] <= st[phys(3'd0)];
+                        ftw[phys(idx[2:0])*2 +: 2] <= ftw[phys(3'd0)*2 +: 2];
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
@@ -670,6 +997,19 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
                     end
 
 CMD_MISC: begin
+
+                    if (idx >= 4'd8) begin
+                        // Phase 6A full math transcendentals use multi-cycle FSM
+                        t_active <= 1'b1;
+                        t_state  <= 4'd0;
+                        t_misc   <= idx;
+                        // Prime generic ops (used in FSM)
+                        t_op_a   <= 64'd0;
+                        t_op_b   <= 64'd0;
+                        // Prevent single-cycle completion pulse
+                        start_multi = 1'b1;
+                    end
+                    else
     // Phase 4 misc ops selected by idx:
     // 0=FCHS, 1=FABS, 2=FTST, 3=FXAM, 4=FSQRT, 5=FRNDINT, 6=FSCALE, 7=FXTRACT
     // All operate on ST0 and do not change TOP (except none).
@@ -997,36 +1337,36 @@ CMD_FSUB_STI: begin
                     end
                     CMD_FADDP_STI: begin
                         // ST(i) = ST(i) + ST0; pop
-                        st[phys(idx)] <= add_y;
+                        st[phys(idx[2:0])] <= add_y;
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
                     CMD_FMULP_STI: begin
-                        st[phys(idx)] <= mul_y;
+                        st[phys(idx[2:0])] <= mul_y;
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
                     CMD_FSUBRP_STI: begin
                         // ST(i) = ST0 - ST(i); pop
-                        st[phys(idx)] <= sub_y;
+                        st[phys(idx[2:0])] <= sub_y;
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
                     CMD_FSUBP_STI: begin
                         // ST(i) = ST(i) - ST0; pop
-                        st[phys(idx)] <= subr_y;
+                        st[phys(idx[2:0])] <= subr_y;
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
                     CMD_FDIVRP_STI: begin
                         // ST(i) = ST0 / ST(i); pop
-                        st[phys(idx)] <= div_y;
+                        st[phys(idx[2:0])] <= div_y;
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
                     CMD_FDIVP_STI: begin
                         // ST(i) = ST(i) / ST0; pop
-                        st[phys(idx)] <= divr_y;
+                        st[phys(idx[2:0])] <= divr_y;
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
@@ -1036,8 +1376,10 @@ CMD_FSUB_STI: begin
                     end
                 endcase
 
+                if (!start_multi) begin
                 busy <= 1'b0;
                 done <= 1'b1;
+                end
             end
         end
     end
