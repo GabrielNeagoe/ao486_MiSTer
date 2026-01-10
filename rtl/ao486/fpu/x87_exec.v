@@ -66,6 +66,9 @@ module x87_exec (
 
     localparam CMD_FDIVR_STI  = 5'd30;
 
+    localparam CMD_FPREM      = 5'd19; // Phase 5A: 0=FPREM, 1=FPREM1
+
+
         localparam CMD_MISC       = 5'd31; // Phase 4 misc ops
 // x87 state
     reg [15:0] fcw;  // control word
@@ -135,6 +138,148 @@ module x87_exec (
             end
         end
     endfunction
+
+    // -------------------------------------------------------------------------
+    // Helpers for Phase 5A
+    // -------------------------------------------------------------------------
+    // Round a float64 to an integral-valued float64. Returns {inexact, value}.
+    function [64:0] round_int_f64;
+        input [63:0] d;
+        input [1:0]  rc; // 2'b11=trunc, 2'b00=nearest-even
+        reg s;
+        reg [10:0] e;
+        reg [51:0] f;
+        reg signed [12:0] exp_unb;
+        reg [52:0] mant;
+        reg [53:0] mant_int;
+        reg [53:0] add_inc;
+        reg [53:0] frac;
+        reg [53:0] half;
+        reg [53:0] mask;
+        reg inex;
+        reg [63:0] y;
+        integer shift;
+        begin
+            s = d[63]; e = d[62:52]; f = d[51:0];
+            inex = 1'b0; y = d;
+            if (e == 11'h7FF) begin
+                // NaN/Inf: propagate
+                y = d; inex = 1'b0;
+            end
+            else if (e == 0) begin
+                // subnormal/zero: |x| < 1
+                if (rc == 2'b00) begin
+                    // nearest-even: treat >=0.5 as 1 (ties-to-even => 0.5 -> 0)
+                    if (f[51] == 1'b1) begin
+                        // >= 0.5
+                        y = {s, 11'd1023, 52'd0};
+                        inex = 1'b1;
+                    end
+                    else begin
+                        y = {s, 63'd0};
+                        inex = (f != 0);
+                    end
+                end
+                else begin
+                    // trunc
+                    y = {s, 63'd0};
+                    inex = (f != 0);
+                end
+            end
+            else begin
+                exp_unb = $signed({1'b0,e}) - 13'sd1023;
+                if (exp_unb >= 52) begin
+                    y = d; inex = 1'b0;
+                end
+                else if (exp_unb < 0) begin
+                    // |x| < 1
+                    if (rc == 2'b00) begin
+                        // nearest-even: if |x| > 0.5 -> 1, if ==0.5 -> 0
+                        if (e > 11'd1022 || (e == 11'd1022 && f != 0)) begin
+                            y = {s, 11'd1023, 52'd0};
+                            inex = 1'b1;
+                        end
+                        else begin
+                            y = {s, 63'd0};
+                            inex = 1'b1;
+                        end
+                    end
+                    else begin
+                        y = {s, 63'd0};
+                        inex = 1'b1;
+                    end
+                end
+                else begin
+                    shift = 52 - exp_unb;
+                    mant = {1'b1,f};
+                    mask = (shift >= 54) ? 54'h3FFF_FFFF_FFFF_FF : ((54'h1 << shift) - 1);
+                    frac = {1'b0,mant} & mask;
+                    inex = (frac != 0);
+                    mant_int = {1'b0,mant} & ~mask;
+                    add_inc = 54'd0;
+                    if (inex) begin
+                        if (rc == 2'b00) begin
+                            // nearest-even
+                            half = (shift==0) ? 54'd0 : (54'h1 << (shift-1));
+                            if (frac > half) begin
+                                add_inc = (54'h1 << shift);
+                            end
+                            else if (frac == half) begin
+                                // tie: add if LSB of integer part is 1
+                                if (shift < 54 && mant_int[shift] == 1'b1) add_inc = (54'h1 << shift);
+                            end
+                        end
+                        // trunc: no increment
+                    end
+                    mant_int = mant_int + add_inc;
+                    // Renormalize if carry shifted past hidden bit
+                    if (mant_int[53] == 1'b1) begin
+                        mant_int = mant_int >> 1;
+                        y = {s, e + 11'd1, mant_int[51:0]};
+                    end
+                    else begin
+                        y = {s, e, mant_int[51:0]};
+                    end
+                end
+            end
+            round_int_f64 = {inex, y};
+        end
+    endfunction
+
+    // Truncate float64 to signed 32-bit (used by FSCALE exponent).
+    function signed [31:0] f64_to_s32_trunc;
+        input [63:0] d;
+        reg s;
+        reg [10:0] e;
+        reg [51:0] f;
+        reg signed [12:0] exp_unb;
+        reg [52:0] mant;
+        reg [63:0] mag;
+        begin
+            s = d[63]; e = d[62:52]; f = d[51:0];
+            if (e == 11'h7FF) begin
+                f64_to_s32_trunc = s ? -32'sd2147483648 : 32'sd2147483647;
+            end
+            else if (e == 0) begin
+                f64_to_s32_trunc = 32'sd0;
+            end
+            else begin
+                exp_unb = $signed({1'b0,e}) - 13'sd1023;
+                if (exp_unb < 0) begin
+                    f64_to_s32_trunc = 32'sd0;
+                end
+                else if (exp_unb > 31) begin
+                    f64_to_s32_trunc = s ? -32'sd2147483648 : 32'sd2147483647;
+                end
+                else begin
+                    mant = {1'b1,f};
+                    mag = {11'd0, mant} >> (52-exp_unb);
+                    f64_to_s32_trunc = s ? -$signed(mag[31:0]) : $signed(mag[31:0]);
+                end
+            end
+        end
+    endfunction
+
 
 
     // Convert signed 32-bit integer to IEEE-754 binary64 (exact for 32-bit range).
@@ -302,6 +447,40 @@ fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(add_y));
     fp64_div u_div(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(div_y));
     // Swapped-operand divide for FDIVR and FDIVP-style encodings
     fp64_div u_divr(.a(st[phys(idx)]), .b(st[phys(3'd0)]), .y(divr_y));
+
+    // Phase 5A dedicated datapath: ST0/ST1 division and remainder
+    wire [63:0] st0_val = st[phys(3'd0)];
+    wire [63:0] st1_val = st[phys(3'd1)];
+    wire [63:0] prem_div_y;
+    wire        prem_div_inexact;
+    wire [63:0] prem_prod_y;
+    wire        prem_prod_inexact;
+    wire [63:0] prem_rem_y;
+    wire        prem_rem_inexact;
+    reg  [63:0] prem_qf;
+    reg         prem_q_inexact;
+
+    fp64_div u_prem_div(.a(st0_val), .b(st1_val), .y(prem_div_y), .inexact(prem_div_inexact));
+    fp64_mul u_prem_mul(.a(prem_qf), .b(st1_val), .y(prem_prod_y), .inexact(prem_prod_inexact));
+    fp64_add u_prem_sub(.a(st0_val), .b({~prem_prod_y[63], prem_prod_y[62:0]}), .y(prem_rem_y), .inexact(prem_rem_inexact));
+
+    // Compute integer quotient (as float64) for FPREM/FPREM1
+    always @(*) begin
+        prem_qf = 64'd0;
+        prem_q_inexact = 1'b0;
+        // Default: trunc toward zero
+        if (cmd == CMD_FPREM) begin
+            if (idx == 3'd1) begin
+                // FPREM1: nearest-even
+                {prem_q_inexact, prem_qf} = round_int_f64(prem_div_y, 2'b00);
+            end
+            else begin
+                // FPREM: trunc
+                {prem_q_inexact, prem_qf} = round_int_f64(prem_div_y, 2'b11);
+            end
+        end
+    end
+
     fp64_cmp u_cmp(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .lt(cmp_lt), .eq(cmp_eq), .gt(cmp_gt));
 
     
@@ -466,9 +645,33 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
                         st[phys(3'd0)] <= divr_y;
                     end
                     
+                    // ----------------------
+                    // Phase 5A: FPREM/FPREM1 (ST0 = ST0 - Q*ST1)
+                    // idx=0:FPREM (truncate), idx=1:FPREM1 (nearest-even)
+                    // ----------------------
+                    CMD_FPREM: begin
+                        // basic stack-empty checks
+                        if (ftw[phys(3'd0)*2 +: 2] == 2'b11 || ftw[phys(3'd1)*2 +: 2] == 2'b11) begin
+                            fsw[0] <= 1'b1; // IE
+                            fsw[10]<= 1'b1; // C2
+                        end
+                        else if (st1_val[62:0] == 63'd0) begin
+                            // divide by zero -> Invalid (simplified)
+                            fsw[0] <= 1'b1; // IE
+                            fsw[10]<= 1'b1; // C2
+                        end
+                        else begin
+                            st[phys(3'd0)] <= prem_rem_y;
+                            // C2 = 0 (complete) for single-pass implementation
+                            fsw[10] <= 1'b0;
+                            // PE if any inexact occurred in quotient rounding or arithmetic
+                            fsw[5]  <= prem_q_inexact | prem_div_inexact | prem_prod_inexact | prem_rem_inexact;
+                        end
+                    end
+
 CMD_MISC: begin
     // Phase 4 misc ops selected by idx:
-    // 0=FCHS, 1=FABS, 2=FTST, 3=FXAM, 4=FSQRT, 5=FRNDINT
+    // 0=FCHS, 1=FABS, 2=FTST, 3=FXAM, 4=FSQRT, 5=FRNDINT, 6=FSCALE
     // All operate on ST0 and do not change TOP (except none).
     if (ftw[phys(3'd0)*2 +: 2] == 2'b11) begin
         // Empty stack entry -> stack fault (simplified as Invalid)
@@ -586,6 +789,50 @@ CMD_MISC: begin
                     if (sqrt_inexact) fsw[5] <= 1'b1; // PE (bit 5)
                 end
             end
+            3'd6: begin
+                // FSCALE: ST0 = ST0 * 2^(trunc(ST1))
+                // Simplified: adjust exponent for normal numbers; preserve sign/mantissa.
+                if (ftw[phys(3'd1)*2 +: 2] == 2'b11) begin
+                    fsw[0] <= 1'b1; // IE
+                    fsw[10]<= 1'b1; // C2
+                end
+                else begin
+                    integer k;
+                    reg s0;
+                    reg [10:0] e0;
+                    reg [51:0] m0;
+                    reg signed [12:0] e_new;
+                    k  = f64_to_s32_trunc(st1_val);
+                    s0 = st0_val[63];
+                    e0 = st0_val[62:52];
+                    m0 = st0_val[51:0];
+                    if (e0 == 11'h000) begin
+                        // zero/denorm: leave as-is
+                        st[phys(3'd0)] <= st0_val;
+                    end
+                    else if (e0 == 11'h7FF) begin
+                        // NaN/Inf propagate
+                        st[phys(3'd0)] <= st0_val;
+                    end
+                    else begin
+                        e_new = $signed({1'b0,e0}) + $signed(k);
+                        if (e_new >= 13'sd2047) begin
+                            // overflow -> Inf (simplified)
+                            st[phys(3'd0)] <= {s0, 11'h7FF, 52'd0};
+                            fsw[2] <= 1'b1; // OE (approx)
+                        end
+                        else if (e_new <= 13'sd0) begin
+                            // underflow -> 0 (simplified)
+                            st[phys(3'd0)] <= {s0, 63'd0};
+                            fsw[4] <= 1'b1; // UE (approx)
+                        end
+                        else begin
+                            st[phys(3'd0)] <= {s0, e_new[10:0], m0};
+                        end
+                    end
+                end
+            end
+
             default: begin
                 // FRNDINT: round to integral value in ST0 using FCW.RC (simplified)
                 reg [63:0] x;

@@ -49,6 +49,9 @@ module x87_decode(
     localparam CMD_FIST_MEM   = 5'd17;
     localparam CMD_FISTP_MEM  = 5'd18;
 
+    localparam CMD_FPREM      = 5'd19; // Phase 5A: FPREM/FPREM1 via idx
+
+
     localparam CMD_FADD_STI   = 5'd20;
     localparam CMD_FMUL_STI   = 5'd21;
     localparam CMD_FDIV_STI   = 5'd22;
