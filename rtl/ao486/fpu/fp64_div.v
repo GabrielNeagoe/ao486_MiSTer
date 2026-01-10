@@ -82,7 +82,4 @@ module fp64_div(
     end
 
 
-// Inexact flag: asserts when discarded bits are non-zero during truncation/rounding.
-assign inexact = 1'b0;
-
 endmodule
