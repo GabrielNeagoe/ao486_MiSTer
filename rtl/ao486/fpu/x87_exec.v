@@ -671,7 +671,7 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
 
 CMD_MISC: begin
     // Phase 4 misc ops selected by idx:
-    // 0=FCHS, 1=FABS, 2=FTST, 3=FXAM, 4=FSQRT, 5=FRNDINT, 6=FSCALE
+    // 0=FCHS, 1=FABS, 2=FTST, 3=FXAM, 4=FSQRT, 5=FRNDINT, 6=FSCALE, 7=FXTRACT
     // All operate on ST0 and do not change TOP (except none).
     if (ftw[phys(3'd0)*2 +: 2] == 2'b11) begin
         // Empty stack entry -> stack fault (simplified as Invalid)
@@ -833,6 +833,62 @@ CMD_MISC: begin
                 end
             end
 
+            3'd7: begin
+                // FXTRACT: push significand; store exponent in ST1
+                // Result: ST0=significand in [0.5,1) with sign of x; ST1=exponent as signed integer in fp64
+                reg [63:0] x;
+                reg        s;
+                reg [10:0] e;
+                reg [51:0] f;
+                reg [52:0] mant;
+                integer    k;
+                integer    exp_unb;
+                integer    exp_fx;
+                reg [63:0] sig_fp;
+                reg [63:0] exp_fp;
+                reg signed [31:0] exp_s32;
+                x = st[phys(3'd0)];
+                s = x[63];
+                e = x[62:52];
+                f = x[51:0];
+                if (e == 11'd0 && f == 52'd0) begin
+                    // Zero: exponent = -Inf (approx), significand = 0
+                    sig_fp = {s, 11'd0, 52'd0};
+                    exp_fp = 64'hFFF0_0000_0000_0000; // -Inf
+                end
+                else if (e == 11'h7FF) begin
+                    // NaN/Inf propagate (simplified)
+                    sig_fp = x;
+                    exp_fp = x;
+                end
+                else begin
+                    if (e == 11'd0) begin
+                        // Subnormal: normalize mantissa, exponent starts at -1022
+                        exp_unb = -1022;
+                        mant = {1'b0, f};
+                        for (k = 0; k < 52; k = k + 1) begin
+                            if (mant[52] == 1'b0) begin
+                                mant = mant << 1;
+                                exp_unb = exp_unb - 1;
+                            end
+                        end
+                    end
+                    else begin
+                        exp_unb = $signed({1'b0,e}) - 1023;
+                        mant    = {1'b1, f};
+                    end
+                    exp_fx = exp_unb + 1;
+                    sig_fp = {s, 11'd1022, mant[51:0]};
+                    exp_s32 = exp_fx;
+                    exp_fp  = s32_to_f64(exp_s32);
+                end
+                // Push significand onto stack (TOP--) and place exponent into new ST1 (old ST0 physical slot)
+                top <= top - 3'd1;
+                st[(top - 3'd1)] <= sig_fp;
+                st[top]          <= exp_fp;
+                ftw[((top - 3'd1)*2) +: 2] <= 2'b00;
+                ftw[(top*2) +: 2]          <= 2'b00;
+            end
             default: begin
                 // FRNDINT: round to integral value in ST0 using FCW.RC (simplified)
                 reg [63:0] x;
