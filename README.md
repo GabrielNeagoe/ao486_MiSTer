@@ -3,6 +3,7 @@
 MiSTer port of the ao486 core originally written by Aleksander Osman, which has been greatly reworked with many new features and performance added.
 
 Original Core [repository](https://github.com/alfikpl/ao486)
+Forked from ao486_MiSTer https://github.com/MiSTer-devel/ao486_MiSTer
 
 ## Features:
 * 486DX-class performance with integrated **x87 FPU (phases 0–5 implemented)**.
@@ -64,43 +65,6 @@ This implementation targets **high software compatibility** (DOS extenders, game
 * Phase 6: Transcendentals (FSIN/FCOS/FPTAN)
 * Phase 7: BCD operations (FBLD/FBSTP)
 * Phase 8: Area/timing optimization (DE10 vs DE25)
-
-## x87 FPU Feature Matrix
-
-| Instruction Group | Instruction | Status | Notes |
-|------------------|-------------|--------|-------|
-| Init / Control | FINIT / FNINIT | ✓ | Architectural reset values |
-| Init / Control | FWAIT | ✓ | Busy/done model |
-| Status / Control | FNSTSW AX | ✓ | AX writeback |
-| Status / Control | FLDCW / FNSTCW | ✓ | Pragmatic RC handling |
-| Stack Ops | FLD ST(i) | ✓ | |
-| Stack Ops | FST / FSTP ST(i) | ✓ | |
-| Stack Ops | FXCH ST(i) | ✓ | |
-| Memory | FLD m32 / m64 | ✓ | |
-| Memory | FSTP m32 / m64 | ✓ | |
-| Arithmetic | FADD / FADDP | ✓ | |
-| Arithmetic | FSUB / FSUBP / FSUBR / FSUBRP | ✓ | |
-| Arithmetic | FMUL / FMULP | ✓ | |
-| Arithmetic | FDIV / FDIVP / FDIVR / FDIVRP | ✓ | |
-| Compare | FCOM / FCOMP | ✓ | Sets C0/C2/C3 |
-| Integer Conv | FILD | ✓ | 16/32-bit |
-| Integer Conv | FIST / FISTP | ✓ | 16/32-bit |
-| Unary | FCHS | ✓ | |
-| Unary | FABS | ✓ | |
-| Unary | FTST | ✓ | Compare vs +0 |
-| Unary | FRNDINT | ✓ | RC honored |
-| Unary | FSQRT | ✓ | Pragmatic sqrt |
-| Scaling | FSCALE | ✓ | Uses trunc(ST1) |
-| Remainder | FPREM | ✓ | Single-pass, C2=0 |
-| Remainder | FPREM1 | ✓ | Single-pass |
-| Extract | FXTRACT | ✓ | Push exponent + significand |
-| Trig | FSIN | ✗ | Phase 6 pending |
-| Trig | FCOS | ✗ | Phase 6 pending |
-| Trig | FPTAN | ✗ | Phase 6 pending |
-| Log/Exp | F2XM1 | ✗ | Phase 6 pending |
-| Log/Exp | FYL2X | ✗ | Phase 6 pending |
-| Log/Exp | FYL2XP1 | ✗ | Phase 6 pending |
-| BCD | FBLD / FBSTP | ✗ | Not implemented |
 
 ## Compatibility Notes
 This x87 implementation has been validated conceptually against common real-world software expectations rather than strict microcode equivalence.
