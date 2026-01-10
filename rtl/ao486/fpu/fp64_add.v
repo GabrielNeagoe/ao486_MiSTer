@@ -10,8 +10,7 @@
 module fp64_add(
     input  wire [63:0] a,
     input  wire [63:0] b,
-    output wire [63:0] y,
-    output wire        inexact
+    output wire [63:0] y
 );
     wire [10:0] ea = a[62:52];
     wire [10:0] eb = b[62:52];
@@ -104,10 +103,5 @@ module fp64_add(
     wire [51:0] frac_out = out_is_zero ? 52'd0 : mant_norm[51:0];
 
     assign y = out_is_zero ? 64'd0 : {res_sign, exp_norm, frac_out};
-
-
-
-// Inexact flag: asserts when discarded bits are non-zero during truncation/rounding.
-assign inexact = 1'b0;
 
 endmodule

@@ -55,3 +55,6 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) fpu/fp6
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) fpu/fp64_div.v ]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) fpu/fp64_cmp.v ]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) fpu/fp64_sqrt.v ]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) fpu/fp64_exp2.v ]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) fpu/fp64_log2.v ]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) fpu/fp64_sincos.v ]

@@ -6,8 +6,7 @@
 module fp64_div(
     input  wire [63:0] a,
     input  wire [63:0] b,
-    output reg  [63:0] y,
-    output reg         inexact
+    output reg  [63:0] y
 );
     integer i;
 
@@ -26,7 +25,6 @@ module fp64_div(
     always @(*) begin
         // defaults
         y = 64'd0;
-        inexact = 1'b0;
 
         sign_a = a[63];
         sign_b = b[63];
@@ -77,9 +75,6 @@ module fp64_div(
             // Take mantissa (drop hidden 1), simple truncation of guard bit(s)
             man_y = quot[52:0]; // includes hidden 1 at [52] after normalization
             y = {sign_y, exp_adj, man_y[51:0]};
-            inexact = (rem != 0);
         end
     end
-
-
 endmodule
