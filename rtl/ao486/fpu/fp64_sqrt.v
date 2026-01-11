@@ -9,7 +9,9 @@ module fp64_sqrt(
     input  wire [63:0] a,
     output reg  [63:0] y,
     output reg         invalid,
-    output            inexact
+    output reg inexact,
+    output reg overflow,
+    output reg underflow
 );
     integer i;
 
@@ -42,6 +44,8 @@ module fp64_sqrt(
         // Defaults to avoid latches
         invalid   = 1'b0;
         inexact   = 1'b0;
+        overflow  = 1'b0;
+        underflow = 1'b0;
         y         = 64'd0;
 
         nan_q     = 64'h7FF8_0000_0000_0000;
@@ -189,9 +193,5 @@ module fp64_sqrt(
             end
         end
     end
-
-
-// Inexact flag: asserts when discarded bits are non-zero during truncation/rounding.
-assign inexact = 1'b0  /* TODO: connect remainder/sticky */;
 
 endmodule

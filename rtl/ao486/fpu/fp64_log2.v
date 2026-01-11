@@ -56,33 +56,42 @@ module fp64_log2 (
     fp64_add u_s12345 (.a(s1234),   .b(p5), .y(s12345));
     fp64_add u_logm   (.a(s12345),  .b(p6), .y(logm));
 
-    wire signed [12:0] e_unb = $signed({2'b00,exp}) - 13'sd1023;
-
+    /*
+     * Quartus-safe helper: convert a small signed integer to IEEE-754 fp64.
+     * Intended for values within a few thousand (e.g. unbiased exponent).
+     */
     function [63:0] int_to_fp64;
-        input signed [12:0] iv;
+        input signed [12:0] i;
         reg s;
-        reg [12:0] mag;
-        integer msb;
+        reg [12:0] a;
+        reg [4:0] msb;
+        reg [52:0] mant;
         integer k;
-        reg [10:0] e;
-        reg [52:0] mant53;
         begin
-            if (iv == 0) begin
-                int_to_fp64 = 64'h0;
+            if(i == 13'sd0) begin
+                int_to_fp64 = 64'd0;
             end
             else begin
-                s = iv[12];
-                mag = s ? -iv : iv;
-                msb = 0;
+                s = i[12];
+                a = s ? (~i + 13'd1) : i;
+                msb = 5'd0;
                 for (k = 12; k>=0; k=k-1) begin
-                    if (mag[k]) begin msb = k; k = -1; end
+                    if(a[k]) msb = k[4:0];
                 end
-                e = 11'd1023 + msb;
-                mant53 = {1'b0, mag} << (52-msb);
-                int_to_fp64 = {s, e, mant53[51:0]};
+
+                /* Normalize |a| so the leading 1 lands at mant[52]. */
+                mant = {a, 40'd0};
+                if(msb < 5'd52) mant = mant << (52 - msb);
+                else            mant = mant >> (msb - 52);
+
+                int_to_fp64 = {s, (11'd1023 + msb), mant[51:0]};
             end
         end
     endfunction
+
+    wire signed [12:0] e_unb = $signed({2'b00,exp}) - 13'sd1023;
+
+    
 
     wire [63:0] e_fp;
     assign e_fp = int_to_fp64(e_unb);

@@ -72,8 +72,10 @@ module fp64_sincos (
         reg [31:0] mag;
         integer msb;
         integer k;
+        reg found;
         reg [10:0] e3;
         reg [52:0] mant53;
+        reg [83:0] mag_norm;
         begin
             if (iv == 0) begin
                 int32_to_fp64 = 64'h0;
@@ -82,11 +84,18 @@ module fp64_sincos (
                 s3 = iv[31];
                 mag = s3 ? -iv : iv;
                 msb = 0;
+                found = 1'b0;
                 for (k = 31; k>=0; k=k-1) begin
-                    if (mag[k]) begin msb = k; k = -1; end
+                    if (!found && mag[k]) begin
+                        msb = k;
+                        found = 1'b1;
+                    end
                 end
                 e3 = 11'd1023 + msb;
-                mant53 = {1'b0, mag} << (52-msb);
+                /* Normalize magnitude so the leading 1 lands in bit 52 (implicit 1). */
+                mag_norm = {mag, 52'b0};
+                mag_norm = mag_norm >> msb; /* mag << (52-msb) */
+                mant53   = mag_norm[52:0];
                 int32_to_fp64 = {s3, e3, mant53[51:0]};
             end
         end

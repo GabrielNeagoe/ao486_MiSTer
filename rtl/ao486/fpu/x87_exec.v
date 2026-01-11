@@ -460,15 +460,15 @@ fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(add_y));
     reg  [63:0] prem_qf;
     reg         prem_q_inexact;
 
-    fp64_div u_prem_div(.a(st0_val), .b(st1_val), .y(prem_div_y), .inexact(prem_div_inexact));
-    fp64_mul u_prem_mul(.a(prem_qf), .b(st1_val), .y(prem_prod_y), .inexact(prem_prod_inexact));
-    fp64_add u_prem_sub(.a(st0_val), .b({~prem_prod_y[63], prem_prod_y[62:0]}), .y(prem_rem_y), .inexact(prem_rem_inexact));
+    fp64_div u_prem_div(.a(st0_val), .b(st1_val), .y(prem_div_y));
+    fp64_mul u_prem_mul(.a(prem_qf), .b(st1_val), .y(prem_prod_y));
+    fp64_add u_prem_sub(.a(st0_val), .b({~prem_prod_y[63], prem_prod_y[62:0]}), .y(prem_rem_y));
 
 
     // Phase 6A: F2XM1 small-argument approximation: (2^x - 1) ~= x*ln2 for |x| << 1
     wire [63:0] f2xm1_mul_y;
     wire        f2xm1_mul_inexact;
-    fp64_mul u_f2xm1_mul(.a(st0_val), .b(64'h3FE62E42FEFA39EF), .y(f2xm1_mul_y), .inexact(f2xm1_mul_inexact));
+    fp64_mul u_f2xm1_mul(.a(st0_val), .b(64'h3FE62E42FEFA39EF), .y(f2xm1_mul_y));
     // Compute integer quotient (as float64) for FPREM/FPREM1
     always @(*) begin
         prem_qf = 64'd0;
@@ -489,7 +489,7 @@ fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(add_y));
     fp64_cmp u_cmp(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .lt(cmp_lt), .eq(cmp_eq), .gt(cmp_gt));
 
     
-    fp64_sqrt u_sqrt(.a(st[phys(3'd0)]), .y(sqrt_y), .invalid(sqrt_invalid), .inexact(sqrt_inexact));
+    fp64_sqrt u_sqrt(.a(st[phys(3'd0)]), .y(sqrt_y), .invalid(sqrt_invalid));
 
     // --- Phase 6C: polynomial transcendental engines (combinational) ---
     wire [63:0] st0_plus1;
@@ -498,25 +498,25 @@ fp64_add u_add(.a(st[phys(3'd0)]), .b(st[phys(idx)]), .y(add_y));
     wire [63:0] log2_y_st0, log2_y_st0p1;
     wire        log2_invalid_st0, log2_inexact_st0;
     wire        log2_invalid_st0p1, log2_inexact_st0p1;
-    fp64_log2 u_log2_st0  (.a(st[phys(3'd0)]), .y(log2_y_st0),   .invalid(log2_invalid_st0),   .inexact(log2_inexact_st0));
+    fp64_log2 u_log2_st0  (.a(st[phys(3'd0)]), .y(log2_y_st0),   .invalid(log2_invalid_st0));
     
     wire [63:0] fp64_mul_y_st1_log;
     wire [63:0] fp64_mul_y_st1_logp1;
     fp64_mul u_mul_st1_log  (.a(st[phys(3'd1)]), .b(log2_y_st0),   .y(fp64_mul_y_st1_log));
     fp64_mul u_mul_st1_logp1(.a(st[phys(3'd1)]), .b(log2_y_st0p1), .y(fp64_mul_y_st1_logp1));
 
-    fp64_log2 u_log2_st0p1(.a(st0_plus1),      .y(log2_y_st0p1), .invalid(log2_invalid_st0p1), .inexact(log2_inexact_st0p1));
+    fp64_log2 u_log2_st0p1(.a(st0_plus1),      .y(log2_y_st0p1), .invalid(log2_invalid_st0p1));
 
     wire [63:0] exp2_y;
     wire        exp2_overflow, exp2_underflow, exp2_inexact;
-    fp64_exp2 u_exp2(.a(st[phys(3'd0)]), .y(exp2_y), .overflow(exp2_overflow), .underflow(exp2_underflow), .inexact(exp2_inexact));
+    fp64_exp2 u_exp2(.a(st[phys(3'd0)]), .y(exp2_y));
 
     wire [63:0] exp2m1_y;
     fp64_add u_exp2m1(.a(exp2_y), .b(64'hBFF0000000000000), .y(exp2m1_y)); // -1.0
 
     wire [63:0] sin_y, cos_y;
     wire        sincos_invalid, sincos_inexact;
-    fp64_sincos u_sincos(.a(st[phys(3'd0)]), .sin_y(sin_y), .cos_y(cos_y), .invalid(sincos_invalid), .inexact(sincos_inexact));
+    fp64_sincos u_sincos(.a(st[phys(3'd0)]), .sin_y(sin_y), .cos_y(cos_y), .invalid(sincos_invalid));
 
     wire [63:0] tan_y;
     fp64_div u_tan(.a(sin_y), .b(cos_y), .y(tan_y));

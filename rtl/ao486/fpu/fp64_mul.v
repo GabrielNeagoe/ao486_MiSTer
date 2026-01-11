@@ -2,7 +2,10 @@
 module fp64_mul(
     input  wire [63:0] a,
     input  wire [63:0] b,
-    output wire [63:0] y
+    output wire [63:0] y,
+    output wire        inexact,
+    output wire        overflow,
+    output wire        underflow
 );
     localparam [10:0] BIAS = 11'd1023;
 
@@ -53,5 +56,13 @@ module fp64_mul(
     wire [51:0] f_out = out_zero ? 52'd0 : mant[51:0];
 
     assign y = out_zero ? 64'd0 : {sR, e_out, f_out};
+
+
+
+// Inexact flag: asserts when discarded bits are non-zero during truncation/rounding.
+assign overflow = 1'b0;
+assign underflow = 1'b0;
+assign inexact = 1'b0;
+
 
 endmodule

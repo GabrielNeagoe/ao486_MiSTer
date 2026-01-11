@@ -6,6 +6,38 @@ module fp64_exp2 (
     output wire        underflow,
     output wire        inexact
 );
+
+function [63:0] int_to_fp64;
+        input signed [12:0] iv;
+        reg s2;
+        reg [12:0] mag;
+        integer msb;
+        integer i;
+        reg found;
+        reg [10:0] e2;
+        reg [52:0] mant53;
+        begin
+            if (iv == 0) begin
+                int_to_fp64 = 64'h0;
+            end
+            else begin
+                s2 = iv[12];
+                mag = s2 ? -iv : iv;
+                msb = 0;
+                found = 1'b0;
+                for (i = 12; i >= 0; i = i - 1) begin
+                    if (!found && mag[i]) begin
+                        msb = i;
+                        found = 1'b1;
+                    end
+                end
+                e2 = 11'd1023 + msb;
+                mant53 = {40'd0, mag} << (52-msb);
+                int_to_fp64 = {s2, e2, mant53[51:0]};
+            end
+        end
+    endfunction
+
     wire sign;
     assign sign = a[63];
     wire [10:0] exp;
@@ -53,31 +85,7 @@ module fp64_exp2 (
 
     wire signed [12:0] n = fp64_to_int_trunc(a);
 
-    function [63:0] int_to_fp64;
-        input signed [12:0] iv;
-        reg s2;
-        reg [12:0] mag;
-        integer msb;
-        integer k;
-        reg [10:0] e2;
-        reg [52:0] mant53;
-        begin
-            if (iv == 0) begin
-                int_to_fp64 = 64'h0;
-            end
-            else begin
-                s2 = iv[12];
-                mag = s2 ? -iv : iv;
-                msb = 0;
-                for (k = 12; k>=0; k=k-1) begin
-                    if (mag[k]) begin msb = k; k = -1; end
-                end
-                e2 = 11'd1023 + msb;
-                mant53 = {1'b0, mag} << (52-msb);
-                int_to_fp64 = {s2, e2, mant53[51:0]};
-            end
-        end
-    endfunction
+    
 
     wire [63:0] n_fp;
     assign n_fp = int_to_fp64(n);
