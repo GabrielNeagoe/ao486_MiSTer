@@ -27,9 +27,9 @@ module x87_top (
     wire [2:0] dec_idx;
 
     x87_decode u_dec(
-        .op1(fpu_op1),
-        .op2(fpu_op2),
-        .op2_valid(fpu_op2_valid),
+        .fpu_op1(fpu_op1),
+        .fpu_op2(fpu_op2),
+        .fpu_op2_valid(fpu_op2_valid),
         .cmd(dec_cmd),
         .cmd_valid(dec_valid),
         .idx(dec_idx)
