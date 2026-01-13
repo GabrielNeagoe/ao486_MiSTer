@@ -40,6 +40,16 @@ module fp64_sqrt(
 
     reg [10:0] e_out;
 
+    // Phase 8A rounding helpers (RN-even; no RC input on interface)
+    reg guard_bit;
+    reg sticky_bit;
+    reg lsb_bit;
+    reg round_inc;
+    reg [53:0] mant_ext;
+    reg mant_carry;
+    reg [52:0] mant_r;
+    reg [10:0] e_out_r;
+
     always @* begin
         // Defaults to avoid latches
         invalid   = 1'b0;
@@ -122,6 +132,7 @@ module fp64_sqrt(
                 // If mantissa became zero (shouldn't for non-zero subnormal), return +0.
                 if (mant == 53'd0) begin
                     y = 64'd0;
+                underflow = 1'b1;
                 end
             end
             else begin
@@ -165,31 +176,43 @@ module fp64_sqrt(
                 end
             end
 
-            inexact = (rem != 0);
+            // Phase 8A: compute guard/sticky and apply RN-even rounding
+            guard_bit  = root[0];
+            sticky_bit = (rem != 0);
+            lsb_bit    = root[1];
+            round_inc  = guard_bit & (sticky_bit | lsb_bit);
+            mant_ext   = {1'b0, root[53:1]} + {53'd0, round_inc};
+            mant_carry = mant_ext[53];
+            mant_r     = mant_carry ? mant_ext[53:1] : mant_ext[52:0];
+            inexact    = guard_bit | sticky_bit;
 
             // root[53:1] holds 53-bit mantissa; root[0] is guard (truncated)
             // Compute output exponent: (exp_unb_even/2) + bias
             // exp_unb_even is even by construction.
             e_out = ( (exp_unb_even >>> 1) + 1023 );
+            e_out_r = e_out + (mant_carry ? 11'd1 : 11'd0);
 
             // Handle exponent under/overflow conservatively:
             if (e_out[10] === 1'bx) begin
                 // Should not happen; safe zero.
                 y = 64'd0;
+                underflow = 1'b1;
             end
-            else if (e_out >= 11'h7FF) begin
+            else if (e_out_r >= 11'h7FF) begin
                 // Overflow to +Inf
                 y = {1'b0, 11'h7FF, 52'd0};
+                overflow = 1'b1;
                 inexact = 1'b1;
             end
-            else if (e_out == 11'd0) begin
+            else if (e_out_r == 11'd0) begin
                 // Underflow to subnormal/zero: crude handling (shift mantissa right).
                 // For Phase 4 functional coverage, emit zero and flag inexact.
                 y = 64'd0;
+                underflow = 1'b1;
                 inexact = 1'b1;
             end
             else begin
-                y = {1'b0, e_out, root[52:1]};
+                y = {1'b0, e_out_r, mant_r[51:0]};
             end
         end
     end

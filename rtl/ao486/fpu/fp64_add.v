@@ -1,12 +1,9 @@
+// fp64_add.v - binary64 adder (Phase 8A)
+// Verilog-2001; no tasks/functions; constant-bounded loops only.
+// Inputs: normals+zero. Denorm/NaN/Inf treated as zero (legacy).
+// Rounding: round-to-nearest, ties-to-even.
+// Subnormal results flushed to zero.
 
-// -----------------------------------------------------------------------------
-// fp64_add.v - Minimal IEEE-754 binary64 adder (Phase 2C)
-//  - Supports normal numbers and zero.
-//  - Denormals treated as zero.
-//  - NaN/Inf not supported (treated as zero).
-//  - Rounding: truncation (toward zero).
-// Synthesis note: fully combinational; resource-heavy but compiles on Quartus.
-// -----------------------------------------------------------------------------
 module fp64_add(
     input  wire [63:0] a,
     input  wire [63:0] b,
@@ -41,78 +38,129 @@ module fp64_add(
     wire [52:0] mA = (eA == 11'd0) ? 53'd0 : {1'b1, fA};
     wire [52:0] mB = (eB == 11'd0) ? 53'd0 : {1'b1, fB};
 
-    wire [10:0] e_max = (eA >= eB) ? eA : eB;
-    wire [10:0] e_min = (eA >= eB) ? eB : eA;
-    wire [10:0] e_diff = e_max - e_min;
+    // Extend mantissas with GRS bits in [2:0]
+    wire [55:0] mA_ext = {mA, 3'b000};
+    wire [55:0] mB_ext = {mB, 3'b000};
 
-    wire [52:0] mA_s = (eA >= eB) ? mA : (mA >> e_diff);
-    wire [52:0] mB_s = (eA >= eB) ? (mB >> e_diff) : mB;
-    wire sR_A = (eA >= eB) ? sA : sB;
-    wire sR_B = (eA >= eB) ? sB : sA;
+    wire a_ge_b_exp = (eA >= eB);
+    wire [10:0] e_max  = a_ge_b_exp ? eA : eB;
+    wire [10:0] e_diff = a_ge_b_exp ? (eA - eB) : (eB - eA);
 
-    wire do_sub = (sR_A ^ sR_B);
-    wire [53:0] sum_add = {1'b0,mA_s} + {1'b0,mB_s};
-    wire [53:0] sum_sub = (mA_s >= mB_s) ? ({1'b0,mA_s} - {1'b0,mB_s}) : ({1'b0,mB_s} - {1'b0,mA_s});
-    wire res_sign = do_sub ? ((mA_s >= mB_s) ? sR_A : sR_B) : sR_A;
+    wire s_big   = a_ge_b_exp ? sA : sB;
+    wire s_small = a_ge_b_exp ? sB : sA;
+    wire [55:0] m_big_in   = a_ge_b_exp ? mA_ext : mB_ext;
+    wire [55:0] m_small_in = a_ge_b_exp ? mB_ext : mA_ext;
 
-    wire [53:0] mant_pre = do_sub ? sum_sub : sum_add;
+    reg [55:0] m_small_aligned;
+    reg        align_sticky;
+    integer k;
+
+    always @(*) begin
+        m_small_aligned = m_small_in;
+        align_sticky    = 1'b0;
+
+        // Shift right by e_diff, accumulating sticky in bit[0]
+        for (k = 0; k < 56; k = k + 1) begin
+            if (k < e_diff) begin
+                align_sticky    = align_sticky | m_small_aligned[0];
+                m_small_aligned = {1'b0, m_small_aligned[55:1]};
+                m_small_aligned[0] = align_sticky;
+            end
+        end
+    end
+
+    wire [55:0] m_big_aligned = m_big_in;
+    wire align_inexact = align_sticky;
+
+    wire do_sub = (s_big ^ s_small);
+
+    wire [56:0] add_sum = {1'b0, m_big_aligned} + {1'b0, m_small_aligned};
+
+    wire big_ge_small_mag = (m_big_aligned >= m_small_aligned);
+    wire [56:0] sub_sum = big_ge_small_mag ?
+                          ({1'b0, m_big_aligned} - {1'b0, m_small_aligned}) :
+                          ({1'b0, m_small_aligned} - {1'b0, m_big_aligned});
+
+    wire res_sign_pre = do_sub ? (big_ge_small_mag ? s_big : s_small) : s_big;
+    wire [56:0] mant_pre = do_sub ? sub_sum : add_sum;
     wire [10:0] exp_pre  = e_max;
 
-    reg [53:0] mant_norm;
+    reg [56:0] mant_norm;
     reg [10:0] exp_norm;
-    reg        norm_done;
+    reg        flush_to_zero;
     integer i;
 
     always @(*) begin
         mant_norm = mant_pre;
         exp_norm  = exp_pre;
-        norm_done = 1'b1;
+        flush_to_zero = 1'b0;
 
-        if (mant_pre == 54'd0) begin
-            mant_norm = 54'd0;
+        if (mant_pre == 57'd0) begin
+            mant_norm = 57'd0;
             exp_norm  = 11'd0;
         end
-        else if (!do_sub && mant_pre[53]) begin
+        else if (!do_sub && mant_pre[56]) begin
+            // Carry out (addition): shift right and increment exponent.
             mant_norm = mant_pre >> 1;
+            mant_norm[0] = mant_norm[0] | mant_pre[0];
             exp_norm  = exp_pre + 11'd1;
         end
         else begin
-            norm_done = 1'b0;
-
-            /* Normalize left until leading 1 reaches bit[52] or exponent underflows.
-             * Bounded loop for Quartus (constant maximum iterations).
-             */
-            for (i = 0; i < 54; i = i + 1) begin
-                if (!norm_done) begin
-                    if (mant_norm[52] == 1'b1) begin
-                        norm_done = 1'b1;
-                    end
-                    else if (exp_norm != 11'd0) begin
+            // Normalize left until leading 1 reaches bit[55]
+            for (i = 0; i < 57; i = i + 1) begin
+                if (mant_norm != 57'd0 && mant_norm[55] == 1'b0) begin
+                    if (exp_norm != 11'd0) begin
                         mant_norm = mant_norm << 1;
                         exp_norm  = exp_norm - 11'd1;
                     end
                     else begin
-                        // exponent underflow -> treat as zero (no denorm support in this minimal core)
-                        mant_norm = 54'd0;
+                        // Underflow: no denormal support -> flush to zero
+                        flush_to_zero = 1'b1;
+                        mant_norm = 57'd0;
                         exp_norm  = 11'd0;
-                        norm_done = 1'b1;
                     end
                 end
             end
         end
     end
 
-    wire out_is_zero = (exp_norm == 11'd0) || (mant_norm[52:0] == 53'd0);
-    wire [51:0] frac_out = out_is_zero ? 52'd0 : mant_norm[51:0];
+    // Guard / Round / Sticky for RN-even rounding
+    wire g_bit   = mant_norm[2];
+    wire r_bit   = mant_norm[1];
+    wire s_bit   = mant_norm[0];
+    wire lsb_bit = mant_norm[3];
 
-    assign y = out_is_zero ? 64'd0 : {res_sign, exp_norm, frac_out};
+    wire rnd_inc = g_bit && (r_bit || s_bit || lsb_bit);
+    wire [56:0] mant_rnd_pre = mant_norm + (rnd_inc ? 57'd8 : 57'd0); // +1 @ bit[3]
 
+    reg  [56:0] mant_postrnd;
+    reg  [10:0] exp_postrnd;
+    always @(*) begin
+        mant_postrnd = mant_rnd_pre;
+        exp_postrnd  = exp_norm;
+        if (!do_sub && mant_rnd_pre[56]) begin
+            // Rounding carry: shift right and increment exponent.
+            mant_postrnd = mant_rnd_pre >> 1;
+            // Preserve sticky: old bit[1] or old bit[0]
+            mant_postrnd[0] = mant_rnd_pre[1] | mant_rnd_pre[0];
+            exp_postrnd  = exp_norm + 11'd1;
+        end
+    end
 
+    wire exp_overflow = (exp_postrnd >= 11'h7FF);
+    wire mag_nonzero_pre = (mant_pre != 57'd0);
+    wire exp_underflow = flush_to_zero && mag_nonzero_pre;
 
-// Inexact flag: asserts when discarded bits are non-zero during truncation/rounding.
-assign overflow = 1'b0;
-assign underflow = 1'b0;
-assign inexact = 1'b0;
+    wire out_is_zero = (!exp_overflow) && ((exp_postrnd == 11'd0) || (mant_postrnd[55:3] == 53'd0));
 
+    wire [51:0] frac_out = out_is_zero ? 52'd0 : mant_postrnd[54:3];
+    wire [10:0] exp_out  = out_is_zero ? 11'd0 : exp_postrnd;
+
+    assign overflow  = exp_overflow;
+    assign underflow = exp_underflow;
+    assign inexact   = exp_overflow || align_inexact || g_bit || r_bit || s_bit;
+
+    assign y = exp_overflow ? {res_sign_pre, 11'h7FF, 52'd0} :
+               (out_is_zero ? 64'd0 : {res_sign_pre, exp_out, frac_out});
 
 endmodule

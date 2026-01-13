@@ -25,6 +25,14 @@ module fp64_div(
     reg [52:0] man_y;
     reg [10:0] exp_adj;
 
+    // Phase 8A rounding helpers (RN-even; no RC input on interface)
+    reg guard_bit;
+    reg sticky_bit;
+    reg lsb_bit;
+    reg round_inc;
+    reg [53:0] mant_ext;
+    reg mant_carry;
+
     always @(*) begin
         // defaults
         y = 64'd0;
@@ -78,10 +86,43 @@ module fp64_div(
                 exp_adj = exp_y - 11'd1;
             end
 
-            // Take mantissa (drop hidden 1), simple truncation of guard bit(s)
-            man_y = quot[52:0]; // includes hidden 1 at [52] after normalization
+            // Take mantissa (drop hidden 1), apply RN-even using 1 guard bit and remainder as sticky.
+            // quot[53] is the hidden 1 after normalization. Fraction bits are [52:1]. Guard is [0].
+            // Sticky is asserted when remainder != 0.
+            guard_bit  = quot[0];
+            sticky_bit = (rem != 0);
+            lsb_bit    = quot[1];
+
+            // RN-even with no explicit round bit: increment if guard && (sticky || lsb)
+            round_inc = guard_bit & (sticky_bit | lsb_bit);
+
+            mant_ext   = {1'b0, quot[53:1]} + {53'd0, round_inc};
+            mant_carry = mant_ext[53];
+
+            if (mant_carry) begin
+                // rounding overflowed mantissa -> shift right and increment exponent
+                man_y   = mant_ext[53:1]; // 53 bits
+                exp_adj = exp_adj + 11'd1;
+            end
+            else begin
+                man_y = mant_ext[52:0];
+            end
+
+            // Exponent range handling (flush-to-zero underflow, +Inf overflow)
+            if (exp_adj >= 11'h7FF) begin
+                y        = {sign_y, 11'h7FF, 52'd0};
+                overflow = 1'b1;
+                inexact  = 1'b1;
+            end
+            else if (exp_adj == 11'd0) begin
+                y         = 64'd0;
+                underflow = 1'b1;
+                inexact   = 1'b1;
+            end
+            else begin
             y = {sign_y, exp_adj, man_y[51:0]};
-            inexact = (rem != 0);
+                inexact = guard_bit | sticky_bit;
+            end
         end
     end
 

@@ -52,17 +52,48 @@ module fp64_mul(
     wire [52:0] mant = prod_n[104:52];
 
     wire out_zero = a_zero || b_zero;
-    wire [10:0] e_out = out_zero ? 11'd0 : exp_n[10:0];
-    wire [51:0] f_out = out_zero ? 52'd0 : mant[51:0];
 
-    assign y = out_zero ? 64'd0 : {sR, e_out, f_out};
+    // -----------------------------------------------------------
+    // Phase 8A: rounding (RN-even) + overflow/underflow/inexact
+    // Notes:
+    // - Rounding control is not provided on this module interface; default is RN-even.
+    // - Denorm/NaN/Inf inputs are already treated as zero by the 'use_a/use_b' gating above.
+    // - Underflow handling is flush-to-zero (no subnormal output).
+    // -----------------------------------------------------------
 
+    // Discarded product bits for rounding
+    wire [51:0] discard = prod_n[51:0];
+    wire guard_bit  = discard[51];
+    wire round_bit  = discard[50];
+    wire sticky_bit = |discard[49:0];
+    wire lsb_bit    = mant[0];
 
+    wire discard_nz = guard_bit | round_bit | sticky_bit;
 
-// Inexact flag: asserts when discarded bits are non-zero during truncation/rounding.
-assign overflow = 1'b0;
-assign underflow = 1'b0;
-assign inexact = 1'b0;
+    // Round-to-nearest, ties-to-even
+    wire round_inc = guard_bit & (round_bit | sticky_bit | lsb_bit);
 
+    wire [53:0] mant_ext = {1'b0, mant} + {53'd0, round_inc};
+    wire mant_carry = mant_ext[53];
+    wire [52:0] mant_r = mant_carry ? mant_ext[53:1] : mant_ext[52:0];
+
+    // Signed exponent tracking (prevents wrap-around on underflow)
+    wire signed [13:0] exp_sum_s = $signed({3'b000, eA}) + $signed({3'b000, eB}) - 14'sd1023;
+    wire signed [13:0] exp_n_s   = prod_ge_2 ? (exp_sum_s + 14'sd1) : exp_sum_s;
+    wire signed [13:0] exp_r_s   = mant_carry ? (exp_n_s + 14'sd1) : exp_n_s;
+
+    // Determine final classification
+    wire exp_over = (exp_r_s >= 14'sd2047);
+    wire exp_under = (exp_r_s <= 14'sd0);
+
+    wire [10:0] e_out = exp_r_s[10:0];
+    wire [51:0] f_out = mant_r[51:0];
+
+    // Outputs
+    assign y = out_zero ? 64'd0 : (exp_over ? {sR, 11'h7FF, 52'd0} : (exp_under ? 64'd0 : {sR, e_out, f_out}));
+
+    assign overflow  = out_zero ? 1'b0 : exp_over;
+    assign underflow = out_zero ? 1'b0 : exp_under;
+    assign inexact   = out_zero ? 1'b0 : (discard_nz | overflow | underflow);
 
 endmodule
