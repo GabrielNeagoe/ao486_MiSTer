@@ -257,29 +257,9 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
 
     // Packed BCD (80-bit) latches for FBLD/FBSTP (two-step)
     reg [63:0] bcd_latch_lo64;
-    wire [79:0] bcd80_w = fp64_to_bcd80(st[phys(3'd0)]);
+    wire [79:0] bcd80_w = if(step==0) fp64_to_bcd80(st[phys(3'd0)]);
     reg [15:0] bcd_latch_hi16;
     reg        bcd_latch_valid;
-
-`ifdef FPU_PERF
-/* Phase 9A: performance instrumentation (cycle counts per micro-step). */
-reg        perf_active;
-reg [4:0]  perf_cmd;
-reg [15:0] perf_cycle_cnt;
-reg [15:0] perf_last_cycle_cnt;
-
-reg [31:0] perf_total_cycles;
-reg [31:0] perf_total_ops;
-
-reg [31:0] perf_cycles_add;
-reg [31:0] perf_cycles_mul;
-reg [31:0] perf_cycles_div;
-reg [31:0] perf_cycles_sqrt;
-reg [31:0] perf_cycles_trans;
-reg [31:0] perf_cycles_bcd;
-`endif
-
-
 
     integer i;
 
@@ -302,24 +282,6 @@ reg [31:0] perf_cycles_bcd;
             memstore_valid <= 1'b0;
             memstore_size  <= 2'd0;
             memstore_data64<= 64'd0;
-
-`ifdef FPU_PERF
-perf_active         <= 1'b0;
-perf_cmd            <= 5'd0;
-perf_cycle_cnt      <= 16'd0;
-perf_last_cycle_cnt <= 16'd0;
-
-perf_total_cycles   <= 32'd0;
-perf_total_ops      <= 32'd0;
-
-perf_cycles_add     <= 32'd0;
-perf_cycles_mul     <= 32'd0;
-perf_cycles_div     <= 32'd0;
-perf_cycles_sqrt    <= 32'd0;
-perf_cycles_trans   <= 32'd0;
-perf_cycles_bcd     <= 32'd0;
-`endif
-
             busy <= 1'b0;
             done <= 1'b0;
             wb_valid <= 1'b0;
@@ -335,58 +297,6 @@ perf_cycles_bcd     <= 32'd0;
             memstore_valid <= 1'b0;
             memstore_size  <= 2'd0;
             memstore_data64<= 64'd0;
-
-`ifdef FPU_PERF
-perf_active         <= 1'b0;
-perf_cmd            <= 5'd0;
-perf_cycle_cnt      <= 16'd0;
-perf_last_cycle_cnt <= 16'd0;
-
-perf_total_cycles   <= 32'd0;
-perf_total_ops      <= 32'd0;
-
-perf_cycles_add     <= 32'd0;
-perf_cycles_mul     <= 32'd0;
-perf_cycles_div     <= 32'd0;
-perf_cycles_sqrt    <= 32'd0;
-perf_cycles_trans   <= 32'd0;
-perf_cycles_bcd     <= 32'd0;
-`endif
-`ifdef FPU_PERF
-/* Count micro-steps: each (start && cmd_valid) is one executed step. step==0 starts a new instruction. */
-if (start && cmd_valid) begin
-    if (step == 4'd0) begin
-        if (perf_active) begin
-            /* Finalize previous op on boundary to next op. */
-            perf_last_cycle_cnt <= perf_cycle_cnt;
-            perf_total_cycles   <= perf_total_cycles + perf_cycle_cnt;
-            perf_total_ops      <= perf_total_ops + 32'd1;
-
-            case (perf_cmd)
-                CMD_FADD, CMD_FSUB, CMD_FSUBR:                         perf_cycles_add  <= perf_cycles_add  + perf_cycle_cnt;
-                CMD_FMUL:                                              perf_cycles_mul  <= perf_cycles_mul  + perf_cycle_cnt;
-                CMD_FDIV:                                              perf_cycles_div  <= perf_cycles_div  + perf_cycle_cnt;
-                CMD_FSQRT:                                             perf_cycles_sqrt <= perf_cycles_sqrt + perf_cycle_cnt;
-                CMD_FYL2X, CMD_F2XM1, CMD_FSINCOS, CMD_FPTAN:           perf_cycles_trans<= perf_cycles_trans+ perf_cycle_cnt;
-                CMD_BCD_MEM:                                           perf_cycles_bcd  <= perf_cycles_bcd  + perf_cycle_cnt;
-                default: begin end
-            endcase
-        end
-
-        /* Start new op. */
-        perf_active    <= 1'b1;
-        perf_cmd       <= cmd;
-        perf_cycle_cnt <= 16'd1;
-    end
-    else begin
-        /* Continue op micro-steps. */
-        perf_cycle_cnt <= perf_cycle_cnt + 16'd1;
-    end
-end
-`endif
-
-
-
             busy <= 1'b0;
 
             if (start && cmd_valid) begin
