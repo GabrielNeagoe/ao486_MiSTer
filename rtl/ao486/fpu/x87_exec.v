@@ -178,7 +178,7 @@ module x87_exec (
         reg [63:0] p10;
         reg [3:0] digit;
         begin
-            sign    = b[79];
+            sign = (b[79:76] == 4'hD);
             val  = 64'd0;
             p10  = 64'd1;
             for (i = 0; i < 18; i = i + 1) begin
@@ -193,144 +193,47 @@ module x87_exec (
     endfunction
 
     // float64 -> packed BCD (10 bytes). Truncates toward zero.
-    function [81:0] fp64_to_bcd80_ext;
+    function [79:0] fp64_to_bcd80;
         input [63:0] d;
-        input [1:0]  rc;
         integer i;
         reg sign;
         reg [10:0] e;
         integer expi;
         reg [52:0] m;
-        reg [63:0] int_val;
+        reg [63:0] val;
         reg [63:0] tmp;
         reg [3:0] digit;
         reg [79:0] b;
-        reg invalid;
-        reg inexact;
-        reg inc;
-        integer shift;
-        reg [63:0] rem;
-        reg [63:0] half;
         begin
             sign = d[63];
             e    = d[62:52];
-
-            invalid  = 1'b0;
-            inexact  = 1'b0;
-            inc      = 1'b0;
-            int_val  = 64'd0;
-            rem      = 64'd0;
-            shift    = 0;
-            half     = 64'd0;
-
-            /* Handle NaN/Inf as invalid for FBSTP conversion. */
-            if (e == 11'h7FF) begin
-                invalid = 1'b1;
-            end
-            else if (e == 11'd0) begin
-                /* Treat denorm/zero as 0; keep sign for -0. */
-                int_val = 64'd0;
-                rem     = (d[51:0] != 52'd0) ? 64'd1 : 64'd0;
+            if (e == 11'd0 || e == 11'h7FF) begin
+                val = 64'd0;
             end
             else begin
                 expi = e - 11'd1023;
-                m    = {1'b1, d[51:0]}; /* 53-bit significand */
-
-                if (expi < 0) begin
-                    /* |d| < 1.0 -> integer part is 0, remainder exists if mantissa non-zero. */
-                    int_val = 64'd0;
-                    rem     = 64'd1;
-                end
-                else if (expi > 63) begin
-                    /* Too large for 64-bit integer staging -> invalid (will become BCD indefinite). */
-                    invalid = 1'b1;
-                end
-                else begin
+                m = {1'b1, d[51:0]};
                 if (expi >= 52) begin
-                        shift   = expi - 52;
-                        int_val = (shift >= 12'd64) ? 64'd0 : (m << shift);
-                        rem     = 64'd0;
+                    if ((expi - 52) > 63) val = 64'hFFFFFFFFFFFFFFFF;
+                    else val = m << (expi - 52);
         end
-                    else begin
-                        shift   = 52 - expi;
-                        int_val = m >> shift;
-
-                        /* Capture remainder bits for rounding/inexact. */
-                        if (shift >= 12'd64) begin
-                            rem = 64'd1;
+                else if (expi >= 0) begin
+                    val = m >> (52 - expi);
             end
             else begin
-                            rem = m & ((64'd1 << shift) - 64'd1);
-                        end
-                    end
+                    val = 64'd0;
                     end
                     end
 
-            /* Range check for 18 digits (|value| >= 1e18 is invalid for FBSTP). */
-            if (!invalid) begin
-                if (int_val >= 64'd1000000000000000000) begin
-                    invalid = 1'b1;
-                end
-            end
-
-            /* Rounding decision (only if not invalid). */
-            if (!invalid) begin
-                if (rem != 64'd0) begin
-                    inexact = 1'b1;
-                end
-
-                inc = 1'b0;
-                case (rc)
-                    2'b00: begin
-                        /* Round to nearest even */
-                        if (shift > 0) begin
-                            half = (64'd1 << (shift-1));
-                            if (rem > half) inc = 1'b1;
-                            else if (rem == half) begin
-                                if ((int_val[0] == 1'b1) || ((rem & (half-1)) != 0)) inc = 1'b1;
-                            end
-                        end
-                    end
-                    2'b11: begin
-                        /* Round toward zero: no increment */
-                        inc = 1'b0;
-                    end
-                    2'b10: begin
-                        /* Round toward +inf */
-                        if (!sign && (rem != 0)) inc = 1'b1;
-                    end
-                    2'b01: begin
-                        /* Round toward -inf */
-                        if (sign && (rem != 0)) inc = 1'b1;
-                    end
-                endcase
-
-                if (inc) begin
-                    int_val = int_val + 64'd1;
-                    /* If rounding pushes to 1e18, it becomes invalid for FBSTP. */
-                    if (int_val >= 64'd1000000000000000000) begin
-                        invalid = 1'b1;
-                    end
-                end
-            end
-
-            /* If invalid, return packed BCD indefinite. Otherwise pack digits. */
-            if (invalid) begin
-                b = 80'hFFFFC000000000000000;
-                end
-                else begin
-                tmp = int_val;
+            tmp = val;
             b = 80'd0;
             for (i = 0; i < 18; i = i + 1) begin
                 digit = tmp % 10;
                 tmp   = tmp / 10;
                 b = b | ({76'd0, digit} << (i*4));
                                 end
-                /* Sign bit is bit79; other sign-byte bits are 0. */
-                    b[79] = sign;
-            end
-
-            fp64_to_bcd80_ext = {invalid, inexact, b};
+            b[79:76] = sign ? 4'hD : 4'hC;
+            fp64_to_bcd80 = b;
         end
     endfunction
     // FP cores (combinational)
@@ -354,12 +257,29 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
 
     // Packed BCD (80-bit) latches for FBLD/FBSTP (two-step)
     reg [63:0] bcd_latch_lo64;
-    wire [81:0] fb_conv_w = fp64_to_bcd80_ext(st[phys(3'd0)], fcw[11:10]);
-    wire        fb_invalid_w = fb_conv_w[81];
-    wire        fb_inexact_w = fb_conv_w[80];
-    wire [79:0] fb_bcd80_w   = fb_conv_w[79:0];
+    wire [79:0] bcd80_w = fp64_to_bcd80(st[phys(3'd0)]);
     reg [15:0] bcd_latch_hi16;
     reg        bcd_latch_valid;
+
+`ifdef FPU_PERF
+/* Phase 9A: performance instrumentation (cycle counts per micro-step). */
+reg        perf_active;
+reg [4:0]  perf_cmd;
+reg [15:0] perf_cycle_cnt;
+reg [15:0] perf_last_cycle_cnt;
+
+reg [31:0] perf_total_cycles;
+reg [31:0] perf_total_ops;
+
+reg [31:0] perf_cycles_add;
+reg [31:0] perf_cycles_mul;
+reg [31:0] perf_cycles_div;
+reg [31:0] perf_cycles_sqrt;
+reg [31:0] perf_cycles_trans;
+reg [31:0] perf_cycles_bcd;
+`endif
+
+
 
     integer i;
 
@@ -382,6 +302,24 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
             memstore_valid <= 1'b0;
             memstore_size  <= 2'd0;
             memstore_data64<= 64'd0;
+
+`ifdef FPU_PERF
+perf_active         <= 1'b0;
+perf_cmd            <= 5'd0;
+perf_cycle_cnt      <= 16'd0;
+perf_last_cycle_cnt <= 16'd0;
+
+perf_total_cycles   <= 32'd0;
+perf_total_ops      <= 32'd0;
+
+perf_cycles_add     <= 32'd0;
+perf_cycles_mul     <= 32'd0;
+perf_cycles_div     <= 32'd0;
+perf_cycles_sqrt    <= 32'd0;
+perf_cycles_trans   <= 32'd0;
+perf_cycles_bcd     <= 32'd0;
+`endif
+
             busy <= 1'b0;
             done <= 1'b0;
             wb_valid <= 1'b0;
@@ -397,6 +335,58 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
             memstore_valid <= 1'b0;
             memstore_size  <= 2'd0;
             memstore_data64<= 64'd0;
+
+`ifdef FPU_PERF
+perf_active         <= 1'b0;
+perf_cmd            <= 5'd0;
+perf_cycle_cnt      <= 16'd0;
+perf_last_cycle_cnt <= 16'd0;
+
+perf_total_cycles   <= 32'd0;
+perf_total_ops      <= 32'd0;
+
+perf_cycles_add     <= 32'd0;
+perf_cycles_mul     <= 32'd0;
+perf_cycles_div     <= 32'd0;
+perf_cycles_sqrt    <= 32'd0;
+perf_cycles_trans   <= 32'd0;
+perf_cycles_bcd     <= 32'd0;
+`endif
+`ifdef FPU_PERF
+/* Count micro-steps: each (start && cmd_valid) is one executed step. step==0 starts a new instruction. */
+if (start && cmd_valid) begin
+    if (step == 4'd0) begin
+        if (perf_active) begin
+            /* Finalize previous op on boundary to next op. */
+            perf_last_cycle_cnt <= perf_cycle_cnt;
+            perf_total_cycles   <= perf_total_cycles + perf_cycle_cnt;
+            perf_total_ops      <= perf_total_ops + 32'd1;
+
+            case (perf_cmd)
+                CMD_FADD, CMD_FSUB, CMD_FSUBR:                         perf_cycles_add  <= perf_cycles_add  + perf_cycle_cnt;
+                CMD_FMUL:                                              perf_cycles_mul  <= perf_cycles_mul  + perf_cycle_cnt;
+                CMD_FDIV:                                              perf_cycles_div  <= perf_cycles_div  + perf_cycle_cnt;
+                CMD_FSQRT:                                             perf_cycles_sqrt <= perf_cycles_sqrt + perf_cycle_cnt;
+                CMD_FYL2X, CMD_F2XM1, CMD_FSINCOS, CMD_FPTAN:           perf_cycles_trans<= perf_cycles_trans+ perf_cycle_cnt;
+                CMD_BCD_MEM:                                           perf_cycles_bcd  <= perf_cycles_bcd  + perf_cycle_cnt;
+                default: begin end
+            endcase
+        end
+
+        /* Start new op. */
+        perf_active    <= 1'b1;
+        perf_cmd       <= cmd;
+        perf_cycle_cnt <= 16'd1;
+    end
+    else begin
+        /* Continue op micro-steps. */
+        perf_cycle_cnt <= perf_cycle_cnt + 16'd1;
+    end
+end
+`endif
+
+
+
             busy <= 1'b0;
 
             if (start && cmd_valid) begin
@@ -605,14 +595,12 @@ CMD_FSUB_STI: begin
                             // FBSTP m80bcd
                             if (step[0] == 1'b0) begin
                                 // Compute BCD once and latch.
-                                {bcd_latch_hi16, bcd_latch_lo64} <= {fb_bcd80_w[79:64], fb_bcd80_w[63:0]};
+                                {bcd_latch_hi16, bcd_latch_lo64} <= fp64_to_bcd80(st[phys(3'd0)]);
                                 bcd_latch_valid <= 1'b1;
 
                                 memstore_valid <= 1'b1;
                                 memstore_size  <= 2'd2; // 64-bit
-                memstore_data64 <= fb_bcd80_w[63:0];
-                                fsw[0] <= fsw[0] | fb_invalid_w;
-                                fsw[5] <= fsw[5] | fb_inexact_w;
+                memstore_data64 <= bcd80_w[63:0];
                             end
                             else begin
                                 memstore_valid <= 1'b1;
