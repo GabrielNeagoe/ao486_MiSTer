@@ -26,12 +26,6 @@ module x87_exec (
     localparam WB_NONE = 3'd0;
     localparam WB_AX   = 3'd1;
 
-
-    // Phase 7B constants
-    localparam [79:0] PACKED_BCD_INDEFINITE = 80'hFFFFC000000000000000;
-    localparam [63:0] FP64_QNAN_INDEFINITE  = 64'hFFF8000000000000;
-    localparam [63:0] DEC18_LIMIT           = 64'd1000000000000000000; // 10^18
-
     // Command encodings (must match x87_decode)
     localparam CMD_NOP        = 5'd0;
     localparam CMD_FNSTSW_AX  = 5'd1;
@@ -176,106 +170,167 @@ module x87_exec (
     endfunction
 
     // Packed BCD (10 bytes) -> float64
-    // packed BCD (10 bytes) -> float64
-    // Phase 7B behavior:
-    //  - Sign is bit79 (not a sign nibble).
-    //  - If any digit nibble > 9, or if the encoding equals PACKED_BCD_INDEFINITE,
-    //    return FP64_QNAN_INDEFINITE (deterministic; also used to trigger IE flag).
     function [63:0] bcd80_to_fp64;
         input [79:0] b;
         integer i;
         reg sign;
-        reg invalid;
         reg [63:0] val;
         reg [63:0] p10;
         reg [3:0] digit;
         begin
             sign    = b[79];
-            invalid = (b == PACKED_BCD_INDEFINITE);
-
             val  = 64'd0;
             p10  = 64'd1;
             for (i = 0; i < 18; i = i + 1) begin
                 digit = (b >> (i*4)) & 4'hF;
-                if (digit > 4'd9) begin
-                    invalid = 1'b1;
-                end
-                else begin
+                if (digit > 4'd9) digit = 4'd0;
                 val = val + (p10 * digit);
-                end
                 p10 = p10 * 64'd10;
             end
-
-            if (invalid) begin
-                bcd80_to_fp64 = FP64_QNAN_INDEFINITE;
-            end
-            else begin
             bcd80_to_fp64 = u64_to_fp64(val);
             bcd80_to_fp64[63] = sign;
-            end
         end
     endfunction
+
     // float64 -> packed BCD (10 bytes). Truncates toward zero.
-    // float64 -> packed BCD (10 bytes). Truncates toward zero.
-    // Phase 7B behavior:
-    //  - For NaN/Inf, or if integer magnitude cannot be represented in 18 digits,
-    //    return PACKED_BCD_INDEFINITE (also used to trigger IE flag).
-    //  - Sign is stored as bit79.
-    function [79:0] fp64_to_bcd80;
+    function [81:0] fp64_to_bcd80_ext;
         input [63:0] d;
+        input [1:0]  rc;
         integer i;
         reg sign;
         reg [10:0] e;
         integer expi;
         reg [52:0] m;
-        reg [63:0] val;
+        reg [63:0] int_val;
         reg [63:0] tmp;
         reg [3:0] digit;
         reg [79:0] b;
+        reg invalid;
+        reg inexact;
+        reg inc;
+        integer shift;
+        reg [63:0] rem;
+        reg [63:0] half;
         begin
             sign = d[63];
             e    = d[62:52];
 
-            // NaN/Inf => indefinite
+            invalid  = 1'b0;
+            inexact  = 1'b0;
+            inc      = 1'b0;
+            int_val  = 64'd0;
+            rem      = 64'd0;
+            shift    = 0;
+            half     = 64'd0;
+
+            /* Handle NaN/Inf as invalid for FBSTP conversion. */
             if (e == 11'h7FF) begin
-                fp64_to_bcd80 = PACKED_BCD_INDEFINITE;
+                invalid = 1'b1;
             end
-            else begin
-                // Zero/denorm => treat as 0 (preserve sign for -0)
-                if (e == 11'd0) begin
-                val = 64'd0;
+            else if (e == 11'd0) begin
+                /* Treat denorm/zero as 0; keep sign for -0. */
+                int_val = 64'd0;
+                rem     = (d[51:0] != 52'd0) ? 64'd1 : 64'd0;
             end
             else begin
                 expi = e - 11'd1023;
-                m = {1'b1, d[51:0]};
+                m    = {1'b1, d[51:0]}; /* 53-bit significand */
+
+                if (expi < 0) begin
+                    /* |d| < 1.0 -> integer part is 0, remainder exists if mantissa non-zero. */
+                    int_val = 64'd0;
+                    rem     = 64'd1;
+                end
+                else if (expi > 63) begin
+                    /* Too large for 64-bit integer staging -> invalid (will become BCD indefinite). */
+                    invalid = 1'b1;
+                end
+                else begin
                 if (expi >= 52) begin
-                    if ((expi - 52) > 63) val = 64'hFFFFFFFFFFFFFFFF;
-                    else val = m << (expi - 52);
+                        shift   = expi - 52;
+                        int_val = (shift >= 12'd64) ? 64'd0 : (m << shift);
+                        rem     = 64'd0;
         end
-                else if (expi >= 0) begin
-                    val = m >> (52 - expi);
+                    else begin
+                        shift   = 52 - expi;
+                        int_val = m >> shift;
+
+                        /* Capture remainder bits for rounding/inexact. */
+                        if (shift >= 12'd64) begin
+                            rem = 64'd1;
             end
             else begin
-                    val = 64'd0;
+                            rem = m & ((64'd1 << shift) - 64'd1);
+                        end
+                    end
                     end
                     end
 
-                // Out of range for 18 digits => indefinite
-                if (val >= DEC18_LIMIT) begin
-                    fp64_to_bcd80 = PACKED_BCD_INDEFINITE;
+            /* Range check for 18 digits (|value| >= 1e18 is invalid for FBSTP). */
+            if (!invalid) begin
+                if (int_val >= 64'd1000000000000000000) begin
+                    invalid = 1'b1;
+                end
+            end
+
+            /* Rounding decision (only if not invalid). */
+            if (!invalid) begin
+                if (rem != 64'd0) begin
+                    inexact = 1'b1;
+                end
+
+                inc = 1'b0;
+                case (rc)
+                    2'b00: begin
+                        /* Round to nearest even */
+                        if (shift > 0) begin
+                            half = (64'd1 << (shift-1));
+                            if (rem > half) inc = 1'b1;
+                            else if (rem == half) begin
+                                if ((int_val[0] == 1'b1) || ((rem & (half-1)) != 0)) inc = 1'b1;
+                            end
+                        end
+                    end
+                    2'b11: begin
+                        /* Round toward zero: no increment */
+                        inc = 1'b0;
+                    end
+                    2'b10: begin
+                        /* Round toward +inf */
+                        if (!sign && (rem != 0)) inc = 1'b1;
+                    end
+                    2'b01: begin
+                        /* Round toward -inf */
+                        if (sign && (rem != 0)) inc = 1'b1;
+                    end
+                endcase
+
+                if (inc) begin
+                    int_val = int_val + 64'd1;
+                    /* If rounding pushes to 1e18, it becomes invalid for FBSTP. */
+                    if (int_val >= 64'd1000000000000000000) begin
+                        invalid = 1'b1;
+                    end
+                end
+            end
+
+            /* If invalid, return packed BCD indefinite. Otherwise pack digits. */
+            if (invalid) begin
+                b = 80'hFFFFC000000000000000;
                 end
                 else begin
-            tmp = val;
+                tmp = int_val;
             b = 80'd0;
             for (i = 0; i < 18; i = i + 1) begin
                 digit = tmp % 10;
                 tmp   = tmp / 10;
                 b = b | ({76'd0, digit} << (i*4));
                                 end
+                /* Sign bit is bit79; other sign-byte bits are 0. */
                     b[79] = sign;
-            fp64_to_bcd80 = b;
-                end
             end
+
+            fp64_to_bcd80_ext = {invalid, inexact, b};
         end
     endfunction
     // FP cores (combinational)
@@ -299,14 +354,13 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
 
     // Packed BCD (80-bit) latches for FBLD/FBSTP (two-step)
     reg [63:0] bcd_latch_lo64;
+    wire [81:0] fb_conv_w = fp64_to_bcd80_ext(st[phys(3'd0)], fcw[11:10]);
+    wire        fb_invalid_w = fb_conv_w[81];
+    wire        fb_inexact_w = fb_conv_w[80];
+    wire [79:0] fb_bcd80_w   = fb_conv_w[79:0];
     reg [15:0] bcd_latch_hi16;
     reg        bcd_latch_valid;
 
-
-    // Phase 7B helpers for BCD ops
-    wire [79:0] bcd80_r_in  = {bcd_latch_hi16, bcd_latch_lo64};
-    wire [63:0] bcd80_r_fp  = bcd80_to_fp64(bcd80_r_in);
-    wire [79:0] bcd80_w     = fp64_to_bcd80(st[phys(3'd0)]);
     integer i;
 
     always @(posedge clk) begin
@@ -542,8 +596,7 @@ CMD_FSUB_STI: begin
                                 bcd_latch_hi16 <= mem_rdata32[15:0];
                                 // Push result
                                 top <= top - 3'd1;
-                                st[phys(3'd7)] <= bcd80_r_fp;
-                                if (bcd80_r_fp == FP64_QNAN_INDEFINITE) fsw[0] <= 1'b1;
+                                st[phys(3'd7)] <= bcd80_to_fp64({mem_rdata32[15:0], bcd_latch_lo64});
                                 ftw[phys(3'd7)*2 +: 2] <= 2'b00;
                                 bcd_latch_valid <= 1'b0;
                             end
@@ -552,13 +605,14 @@ CMD_FSUB_STI: begin
                             // FBSTP m80bcd
                             if (step[0] == 1'b0) begin
                                 // Compute BCD once and latch.
-                                {bcd_latch_hi16, bcd_latch_lo64} <= bcd80_w;
-                                if (bcd80_w == PACKED_BCD_INDEFINITE) fsw[0] <= 1'b1;
+                                {bcd_latch_hi16, bcd_latch_lo64} <= {fb_bcd80_w[79:64], fb_bcd80_w[63:0]};
                                 bcd_latch_valid <= 1'b1;
 
                                 memstore_valid <= 1'b1;
                                 memstore_size  <= 2'd2; // 64-bit
-                memstore_data64 <= bcd80_w[63:0];
+                memstore_data64 <= fb_bcd80_w[63:0];
+                                fsw[0] <= fsw[0] | fb_invalid_w;
+                                fsw[5] <= fsw[5] | fb_inexact_w;
                             end
                             else begin
                                 memstore_valid <= 1'b1;
