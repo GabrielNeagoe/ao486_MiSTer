@@ -257,7 +257,6 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
 
     // Packed BCD (80-bit) latches for FBLD/FBSTP (two-step)
     reg [63:0] bcd_latch_lo64;
-    wire [79:0] bcd80_w = if(step==0) fp64_to_bcd80(st[phys(3'd0)]);
     reg [15:0] bcd_latch_hi16;
     reg        bcd_latch_valid;
 
@@ -510,7 +509,7 @@ CMD_FSUB_STI: begin
 
                                 memstore_valid <= 1'b1;
                                 memstore_size  <= 2'd2; // 64-bit
-                memstore_data64 <= bcd80_w[63:0];
+                                memstore_data64 <= bcd_latch_lo64;
                             end
                             else begin
                                 memstore_valid <= 1'b1;
