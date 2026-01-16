@@ -236,6 +236,46 @@ module x87_exec (
             fp64_to_bcd80 = b;
         end
     endfunction
+
+
+    // ----------------------
+    // Phase 9B-2: Early-exit helpers (pure combinational functions)
+    // ----------------------
+    function is_fp64_zero;
+        input [63:0] x;
+        begin
+            is_fp64_zero = (x[62:0] == 63'd0);
+        end
+    endfunction
+
+    function is_fp64_one;
+        input [63:0] x;
+        begin
+            is_fp64_one = (x[63] == 1'b0) && (x[62:0] == 63'h3FF0000000000000);
+        end
+    endfunction
+
+    function is_fp64_minus_one;
+        input [63:0] x;
+        begin
+            is_fp64_minus_one = (x[63] == 1'b1) && (x[62:0] == 63'h3FF0000000000000);
+        end
+    endfunction
+
+    function [63:0] fp64_neg;
+        input [63:0] x;
+        begin
+            fp64_neg = {~x[63], x[62:0]};
+        end
+    endfunction
+
+    function [63:0] fp64_signed_zero;
+        input sign;
+        begin
+            fp64_signed_zero = {sign, 63'd0};
+        end
+    endfunction
+
     // FP cores (combinational)
     wire [63:0] add_y, mul_y, div_y, divr_y;
     wire [63:0] sub_y, subr_y;
@@ -257,6 +297,7 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
 
     // Packed BCD (80-bit) latches for FBLD/FBSTP (two-step)
     reg [63:0] bcd_latch_lo64;
+    wire [79:0] bcd80_w = fp64_to_bcd80(st[phys(3'd0)]);
     reg [15:0] bcd_latch_hi16;
     reg        bcd_latch_valid;
 
@@ -405,20 +446,62 @@ fp64_add u_sub (.a(st[phys(3'd0)]), .b({~st[phys(idx)][63], st[phys(idx)][62:0]}
                     // Arithmetic / compare
                     // ----------------------
                     CMD_FADD_STI: begin
+                        if (is_fp64_zero(st[phys(idx)])) begin
+                            st[phys(3'd0)] <= st[phys(3'd0)];
+                        end
+                        else if (is_fp64_zero(st[phys(3'd0)])) begin
+                            st[phys(3'd0)] <= st[phys(idx)];
+                        end
+                        else begin
                         st[phys(3'd0)] <= add_y;
+                        end
                     end
                     CMD_FMUL_STI: begin
+                        if (is_fp64_zero(st[phys(3'd0)]) || is_fp64_zero(st[phys(idx)])) begin
+                            st[phys(3'd0)] <= fp64_signed_zero(st[phys(3'd0)][63] ^ st[phys(idx)][63]);
+                        end
+                        else begin
                         st[phys(3'd0)] <= mul_y;
+                        end
                     end
                     CMD_FDIV_STI: begin
+                        if (is_fp64_zero(st[phys(3'd0)]) && !is_fp64_zero(st[phys(idx)])) begin
+                            st[phys(3'd0)] <= fp64_signed_zero(st[phys(3'd0)][63] ^ st[phys(idx)][63]);
+                        end
+                        else if (is_fp64_one(st[phys(idx)])) begin
+                            st[phys(3'd0)] <= st[phys(3'd0)];
+                        end
+                        else if (is_fp64_minus_one(st[phys(idx)])) begin
+                            st[phys(3'd0)] <= fp64_neg(st[phys(3'd0)]);
+                        end
+                        else begin
                         st[phys(3'd0)] <= div_y;
+                        end
                     end
                     CMD_FDIVR_STI: begin
-                        // ST0 = ST(i) / ST0
+                        if (is_fp64_zero(st[phys(idx)]) && !is_fp64_zero(st[phys(3'd0)])) begin
+                            st[phys(3'd0)] <= fp64_signed_zero(st[phys(3'd0)][63] ^ st[phys(idx)][63]);
+                        end
+                        else if (is_fp64_one(st[phys(3'd0)])) begin
+                            st[phys(3'd0)] <= st[phys(idx)];
+                        end
+                        else if (is_fp64_minus_one(st[phys(3'd0)])) begin
+                            st[phys(3'd0)] <= fp64_neg(st[phys(idx)]);
+                        end
+                        else begin
                         st[phys(3'd0)] <= divr_y;
+                        end
                     end
 CMD_FSUB_STI: begin
+                        if (is_fp64_zero(st[phys(idx)])) begin
+                            st[phys(3'd0)] <= st[phys(3'd0)];
+                        end
+                        else if (is_fp64_zero(st[phys(3'd0)])) begin
+                            st[phys(3'd0)] <= fp64_neg(st[phys(idx)]);
+                        end
+                        else begin
                         st[phys(3'd0)] <= sub_y;
+                        end
                     end
                     CMD_FSUBR_STI: begin
                         st[phys(3'd0)] <= subr_y;
@@ -447,12 +530,26 @@ CMD_FSUB_STI: begin
                     end
                     CMD_FADDP_STI: begin
                         // ST(i) = ST(i) + ST0; pop
+                        if (is_fp64_zero(st[phys(3'd0)])) begin
+                            st[phys(idx)] <= st[phys(idx)];
+                        end
+                        else if (is_fp64_zero(st[phys(idx)])) begin
+                            st[phys(idx)] <= st[phys(3'd0)];
+                        end
+                        else begin
                         st[phys(idx)] <= add_y;
+                        end
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
                     CMD_FMULP_STI: begin
+                        // ST(i) = ST(i) * ST0; pop
+                        if (is_fp64_zero(st[phys(idx)]) || is_fp64_zero(st[phys(3'd0)])) begin
+                            st[phys(idx)] <= fp64_signed_zero(st[phys(idx)][63] ^ st[phys(3'd0)][63]);
+                        end
+                        else begin
                         st[phys(idx)] <= mul_y;
+                        end
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
@@ -476,7 +573,18 @@ CMD_FSUB_STI: begin
                     end
                     CMD_FDIVP_STI: begin
                         // ST(i) = ST(i) / ST0; pop
+                        if (is_fp64_zero(st[phys(idx)]) && !is_fp64_zero(st[phys(3'd0)])) begin
+                            st[phys(idx)] <= fp64_signed_zero(st[phys(idx)][63] ^ st[phys(3'd0)][63]);
+                        end
+                        else if (is_fp64_one(st[phys(3'd0)])) begin
+                            st[phys(idx)] <= st[phys(idx)];
+                        end
+                        else if (is_fp64_minus_one(st[phys(3'd0)])) begin
+                            st[phys(idx)] <= fp64_neg(st[phys(idx)]);
+                        end
+                        else begin
                         st[phys(idx)] <= divr_y;
+                        end
                         ftw[phys(3'd0)*2 +: 2] <= 2'b11;
                         top <= top + 3'd1;
                     end
@@ -509,7 +617,7 @@ CMD_FSUB_STI: begin
 
                                 memstore_valid <= 1'b1;
                                 memstore_size  <= 2'd2; // 64-bit
-                                memstore_data64 <= bcd_latch_lo64;
+                memstore_data64 <= bcd80_w[63:0];
                             end
                             else begin
                                 memstore_valid <= 1'b1;
