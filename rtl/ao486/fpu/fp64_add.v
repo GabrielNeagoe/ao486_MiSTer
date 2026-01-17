@@ -53,20 +53,51 @@ module fp64_add(
 
     reg [55:0] m_small_aligned;
     reg        align_sticky;
-    integer k;
+    reg [5:0]  shamt;
+    reg [55:0] m_tmp;
 
     always @(*) begin
-        m_small_aligned = m_small_in;
+        // Phase 9B-3: shift compression for exponent alignment.
+        // Shift right by e_diff using 32/16/8/4/2/1 steps and accumulate sticky.
+        m_tmp        = m_small_in;
         align_sticky    = 1'b0;
 
-        // Shift right by e_diff, accumulating sticky in bit[0]
-        for (k = 0; k < 56; k = k + 1) begin
-            if (k < e_diff) begin
-                align_sticky    = align_sticky | m_small_aligned[0];
-                m_small_aligned = {1'b0, m_small_aligned[55:1]};
-                m_small_aligned[0] = align_sticky;
-            end
+        shamt = (e_diff >= 11'd56) ? 6'd56 : e_diff[5:0];
+
+        if (shamt >= 6'd32) begin
+            align_sticky = align_sticky | (|m_tmp[31:0]);
+            m_tmp        = {32'd0, m_tmp[55:32]};
+            shamt        = shamt - 6'd32;
         end
+        if (shamt >= 6'd16) begin
+            align_sticky = align_sticky | (|m_tmp[15:0]);
+            m_tmp        = {16'd0, m_tmp[55:16]};
+            shamt        = shamt - 6'd16;
+        end
+        if (shamt >= 6'd8) begin
+            align_sticky = align_sticky | (|m_tmp[7:0]);
+            m_tmp        = {8'd0, m_tmp[55:8]};
+            shamt        = shamt - 6'd8;
+        end
+        if (shamt >= 6'd4) begin
+            align_sticky = align_sticky | (|m_tmp[3:0]);
+            m_tmp        = {4'd0, m_tmp[55:4]};
+            shamt        = shamt - 6'd4;
+        end
+        if (shamt >= 6'd2) begin
+            align_sticky = align_sticky | (|m_tmp[1:0]);
+            m_tmp        = {2'd0, m_tmp[55:2]};
+            shamt        = shamt - 6'd2;
+        end
+        if (shamt >= 6'd1) begin
+            align_sticky = align_sticky | m_tmp[0];
+            m_tmp        = {1'b0, m_tmp[55:1]};
+            shamt        = shamt - 6'd1;
+        end
+
+        // Fold sticky into bit[0] (LSB of sticky chain)
+        m_small_aligned = m_tmp;
+        m_small_aligned[0] = m_small_aligned[0] | align_sticky;
     end
 
     wire [55:0] m_big_aligned = m_big_in;
@@ -88,9 +119,12 @@ module fp64_add(
     reg [56:0] mant_norm;
     reg [10:0] exp_norm;
     reg        flush_to_zero;
-    integer i;
+    reg [5:0]  shl;
+    reg [56:0] mant_tmp2;
+    reg [10:0] exp_tmp2;
 
     always @(*) begin
+        // Phase 9B-3: shift compression for normalization.
         mant_norm = mant_pre;
         exp_norm  = exp_pre;
         flush_to_zero = 1'b0;
@@ -106,20 +140,30 @@ module fp64_add(
             exp_norm  = exp_pre + 11'd1;
         end
         else begin
-            // Normalize left until leading 1 reaches bit[55]
-            for (i = 0; i < 57; i = i + 1) begin
-                if (mant_norm != 57'd0 && mant_norm[55] == 1'b0) begin
-                    if (exp_norm != 11'd0) begin
-                        mant_norm = mant_norm << 1;
-                        exp_norm  = exp_norm - 11'd1;
+            // Determine left shift needed so that mant_norm[55] becomes 1.
+            // Use 32/16/8/4/2/1 bounded steps (no variable loops).
+            mant_tmp2 = mant_pre;
+            shl       = 6'd0;
+
+            if (mant_tmp2[55] == 1'b0) begin
+                if (mant_tmp2[55:24] == 32'd0) begin mant_tmp2 = mant_tmp2 << 32; shl = shl + 6'd32; end
+                if (mant_tmp2[55:40] == 16'd0) begin mant_tmp2 = mant_tmp2 << 16; shl = shl + 6'd16; end
+                if (mant_tmp2[55:48] == 8'd0)  begin mant_tmp2 = mant_tmp2 << 8;  shl = shl + 6'd8;  end
+                if (mant_tmp2[55:52] == 4'd0)  begin mant_tmp2 = mant_tmp2 << 4;  shl = shl + 6'd4;  end
+                if (mant_tmp2[55:54] == 2'd0)  begin mant_tmp2 = mant_tmp2 << 2;  shl = shl + 6'd2;  end
+                if (mant_tmp2[55]    == 1'b0)  begin mant_tmp2 = mant_tmp2 << 1;  shl = shl + 6'd1;  end
+            end
+
+            if (exp_pre > {5'd0, shl}) begin
+                exp_tmp2  = exp_pre - {5'd0, shl};
+                mant_norm = mant_tmp2;
+                exp_norm  = exp_tmp2;
                     end
                     else begin
                         // Underflow: no denormal support -> flush to zero
                         flush_to_zero = 1'b1;
                         mant_norm = 57'd0;
                         exp_norm  = 11'd0;
-                    end
-                end
             end
         end
     end

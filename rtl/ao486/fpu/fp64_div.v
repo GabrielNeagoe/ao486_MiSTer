@@ -1,3 +1,4 @@
+// Phase 9C-1: Iteration trimming (early-exit on zero remainder)
 // -----------------------------------------------------------------------------
 // fp64_div.v - Quartus-safe IEEE-754 binary64 divider (minimal)
 // - Normal numbers only (treat NaN/Inf/denorm as zero)
