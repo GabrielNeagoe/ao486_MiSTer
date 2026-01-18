@@ -10,13 +10,15 @@ module fp64_sincos (
     assign exp = a[62:52];
     wire [51:0] frac;
     assign frac = a[51:0];
+    wire is_zero;
+    assign is_zero = (exp == 11'd0) && (frac == 52'd0);
     wire is_inf;
     assign is_inf = (exp == 11'h7FF) && (frac == 0);
     wire is_nan;
     assign is_nan = (exp == 11'h7FF) && (frac != 0);
 
     assign invalid = is_inf;
-    assign inexact = 1'b1;
+    assign inexact = (is_zero && !is_nan && !is_inf) ? 1'b0 : 1'b1;
 
     localparam [63:0] INV_PIO2 = 64'h3FE45F306DC9C883;
     localparam [63:0] PIO2     = 64'h3FF921FB54442D18;
@@ -159,10 +161,12 @@ module fp64_sincos (
         endcase
     end
 
-    assign sin_y = is_nan ? {1'b0,11'h7FF,1'b1,frac[50:0]} :
+    assign sin_y = is_zero ? 64'h0000000000000000 :
+                    is_nan ? {1'b0,11'h7FF,1'b1,frac[50:0]} :
                    invalid ? QNAN :
                    sin_sel;
-    assign cos_y = is_nan ? {1'b0,11'h7FF,1'b1,frac[50:0]} :
+    assign cos_y = is_zero ? 64'h3FF0000000000000 :
+                    is_nan ? {1'b0,11'h7FF,1'b1,frac[50:0]} :
                    invalid ? QNAN :
                    cos_sel;
 endmodule

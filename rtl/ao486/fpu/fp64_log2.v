@@ -20,7 +20,7 @@ module fp64_log2 (
     assign is_nan = (exp == 11'h7FF) && (frac != 52'd0);
 
     assign invalid = (sign && !is_zero) || is_zero;
-    assign inexact = 1'b1;
+    assign inexact = (is_one_exact) ? 1'b0 : 1'b1;
 
     wire [63:0] m;
     assign m = {1'b0, 11'd1023, frac};
@@ -98,7 +98,8 @@ module fp64_log2 (
     wire [63:0] y_raw;
     fp64_add u_y(.a(e_fp), .b(logm), .y(y_raw));
 
-    assign y = (is_nan) ? {1'b0,11'h7FF,1'b1,frac[50:0]} :
+    assign y = (is_one_exact) ? 64'h0000000000000000 :
+               (is_nan) ? {1'b0,11'h7FF,1'b1,frac[50:0]} :
                (is_inf && !sign) ? a :
                (invalid) ? 64'h7FF8_0000_0000_0000 :
                y_raw;

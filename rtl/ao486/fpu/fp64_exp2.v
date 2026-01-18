@@ -52,7 +52,7 @@ function [63:0] int_to_fp64;
     wire is_nan;
     assign is_nan = (exp == 11'h7FF) && (frac != 52'd0);
 
-    assign inexact = 1'b1;
+    assign inexact = (is_zero) ? 1'b0 : 1'b1;
 
     function signed [12:0] fp64_to_int_trunc;
         input [63:0] dv;
