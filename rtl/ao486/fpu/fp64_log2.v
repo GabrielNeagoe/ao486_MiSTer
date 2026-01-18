@@ -12,6 +12,9 @@ module fp64_log2 (
     wire [51:0] frac;
     assign frac = a[51:0];
 
+    wire is_one_exact;
+    assign is_one_exact = (!sign) && (exp == 11'd1023) && (frac == 52'd0);
+
     wire is_zero;
     assign is_zero = (exp == 11'd0) && (frac == 52'd0);
     wire is_inf;
